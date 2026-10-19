@@ -17,3 +17,6 @@ yarn-error.log*
 # Editor / System files
 .DS_Store
 .vscode/
+# Electron generated build files
+release/win-unpacked/
+release/*.exe
