@@ -12,6 +12,8 @@ const api: ElectronAPI = {
   resumeBreak: () => ipcRenderer.invoke('tracker:resume'),
   clockOut: () => ipcRenderer.invoke('tracker:clock-out'),
   syncWithERP: () => ipcRenderer.invoke('tracker:sync'),
+  syncSessions: () => ipcRenderer.invoke('tracker:sync-sessions'),
+  initSession: () => ipcRenderer.invoke('auth:init-session'),
 
   getAuthUser: () => ipcRenderer.invoke('auth:get-user'),
   login: (email: string, password: string) => ipcRenderer.invoke('auth:login', email, password),
@@ -19,6 +21,10 @@ const api: ElectronAPI = {
 
   getSettings: () => ipcRenderer.invoke('settings:get'),
   saveSettings: (settings: Partial<AppSettings>) => ipcRenderer.invoke('settings:save', settings),
+
+  getTodaySessions: () => ipcRenderer.invoke('tracker:get-today-sessions'),
+  openExternal: (url: string) => ipcRenderer.invoke('window:open-external', url),
+  submitBugReport: (report: { title: string; description: string }) => ipcRenderer.invoke('tracker:submit-bug-report', report),
 
   onStateUpdate: (callback: (state: TrackingState) => void) => {
     const handler = (_event: any, state: TrackingState) => callback(state)

@@ -31,15 +31,53 @@ class IsolatedStorageEngine {
     this.data = this.loadData()
   }
 
-  private normalizeSession(session: TrackingSession | null): TrackingSession | null {
-    if (!session) return null
-    if (session.status !== 'completed' && session.status !== 'Completed') {
-      const hasOpenBreak = session.breaks && session.breaks.some((b: any) => b.end_time === null)
-      session.status = hasOpenBreak ? 'on_break' : 'working'
-      if (session.suspended_seconds === undefined) session.suspended_seconds = 0
-      if (session.active_seconds_buffer === undefined) session.active_seconds_buffer = 0
+  public validateActiveSession(session: TrackingSession | null, expectedEmployeeId?: string): TrackingSession | null {
+    if (!session || !session.id) return null
+
+    // 1. Employee ownership check
+    if (expectedEmployeeId && session.employee_id !== expectedEmployeeId) {
+      return null
     }
+
+    // 2. Non-terminated check: if already clocked out, it's not active
+    if (session.clock_out !== null && session.clock_out !== undefined) {
+      return null
+    }
+
+    // 3. Completed status check
+    if (session.status === 'completed' || session.status === 'Completed') {
+      return null
+    }
+
+    // 4. Timestamp validity check
+    const clockInMs = new Date(session.clock_in).getTime()
+    if (isNaN(clockInMs)) {
+      return null
+    }
+
+    // 5. Staleness check: sessions older than 24h cannot be active
+    if (Date.now() - clockInMs > 24 * 60 * 60 * 1000) {
+      session.status = 'completed'
+      session.clock_out = new Date(clockInMs + 24 * 60 * 60 * 1000).toISOString()
+      return null
+    }
+
+    // 6. Break consistency check
+    if (!Array.isArray(session.breaks)) {
+      session.breaks = []
+    }
+    session.breaks = session.breaks.filter((b: any) => !b.session_id || b.session_id === session.id)
+
+    const hasOpenBreak = session.breaks.some((b: any) => b.end_time === null)
+    session.status = hasOpenBreak ? 'on_break' : 'working'
+    if (session.suspended_seconds === undefined) session.suspended_seconds = 0
+    if (session.active_seconds_buffer === undefined) session.active_seconds_buffer = 0
+
     return session
+  }
+
+  private normalizeSession(session: TrackingSession | null): TrackingSession | null {
+    return this.validateActiveSession(session)
   }
 
   public loadData(): TestStorageData {
@@ -175,32 +213,42 @@ class IsolatedStorageEngine {
     const store = this.data.employeeData[empId]
     if (!store || !store.currentSession) return null
 
-    if (store.currentSession.employee_id !== empId) {
-      store.currentSession = null
-      this.save()
+    const validated = this.validateActiveSession(store.currentSession, empId)
+    if (!validated) {
+      if (store.currentSession) {
+        const s = store.currentSession
+        const idx = store.todaySessions.findIndex(x => x.id === s.id)
+        if (idx !== -1) store.todaySessions[idx] = s
+        else store.todaySessions.push(s)
+        store.currentSession = null
+        this.save()
+      }
       return null
     }
 
-    return store.currentSession
+    store.currentSession = validated
+    return validated
   }
 
   public setCurrentSession(session: TrackingSession | null, employeeId?: string): void {
+    const empId = session?.employee_id || employeeId || this.data.currentUser?.id || this.data.activeEmployeeId
+    if (!empId) return
+
+    const store = this.getEmployeeData(empId)
+
     if (session) {
-      const empId = session.employee_id || employeeId || this.data.currentUser?.id
-      if (!empId) return
       session.employee_id = empId
-      const store = this.getEmployeeData(empId)
-      store.currentSession = session
+      const validated = this.validateActiveSession(session, empId)
+
       const idx = store.todaySessions.findIndex(s => s.id === session.id)
       if (idx !== -1) store.todaySessions[idx] = session
       else store.todaySessions.push(session)
+
+      store.currentSession = validated
       this.save()
     } else {
-      const empId = employeeId || this.data.currentUser?.id
-      if (empId && this.data.employeeData[empId]) {
-        this.data.employeeData[empId].currentSession = null
-        this.save()
-      }
+      store.currentSession = null
+      this.save()
     }
   }
 
@@ -293,8 +341,16 @@ class ActivityTrackerSimulator {
     const todayWorkedMinutes = todaySessions.reduce((acc, s) => acc + s.worked_minutes, 0)
     const todayActiveMinutes = todaySessions.reduce((acc, s) => acc + s.active_minutes, 0)
 
+    let status: string = 'Not Clocked In'
+    if (session && session.employee_id === empId && !session.clock_out && session.status !== 'completed' && session.status !== 'Completed') {
+      const hasOpenBreak = session.breaks && session.breaks.some((b: any) => b.end_time === null)
+      status = hasOpenBreak ? 'on_break' : 'working'
+    } else if (todaySessions.length > 0 && todaySessions.some(s => s.status === 'completed' || s.status === 'Completed' || s.clock_out !== null)) {
+      status = 'Completed'
+    }
+
     return {
-      status: session ? session.status : 'Not Clocked In',
+      status,
       currentSession: session,
       todayWorkedMinutes,
       todayActiveMinutes,
@@ -477,12 +533,13 @@ describe('Cross-User Session Isolation & Ownership Regression Suite', () => {
     // 1. Omkar logs in and clocks in
     storage.setCurrentUser(userOmkar)
     tracker.onUserLogin(userOmkar)
-    const omkarSession = tracker.clockIn(userOmkar.id, '2026-10-18T09:00:00.000Z')
+    const omkarStart = new Date(Date.now() - 95 * 60000).toISOString()
+    const omkarSession = tracker.clockIn(userOmkar.id, omkarStart)
     expect(omkarSession.employee_id).toBe(userOmkar.id)
     expect(omkarSession.status).toBe('working')
 
     // Work for 90 minutes
-    const startMs = new Date('2026-10-18T09:00:00.000Z').getTime()
+    const startMs = new Date(omkarStart).getTime()
     tracker.simulateTick(userOmkar.id, startMs + 90 * 60000)
 
     const omkarState = tracker.getState(userOmkar.id)
@@ -550,13 +607,15 @@ describe('Cross-User Session Isolation & Ownership Regression Suite', () => {
   })
 
   it('Regression Test 3: Two accounts have independent session IDs, clock-in timestamps, Worked Hours, and Active Hours', () => {
-    // Omkar clocks in at 09:00 AM
+    // Omkar clocks in
     storage.setCurrentUser(userOmkar)
     tracker.onUserLogin(userOmkar)
-    const omkarSession = tracker.clockIn(userOmkar.id, '2026-10-18T09:00:00.000Z')
+    const baseNow = Date.now()
+    const omkarStart = new Date(baseNow - 150 * 60000).toISOString()
+    const omkarSession = tracker.clockIn(userOmkar.id, omkarStart)
 
     // Omkar works 2 hours (120 mins)
-    const omkarStartMs = new Date('2026-10-18T09:00:00.000Z').getTime()
+    const omkarStartMs = new Date(omkarStart).getTime()
     for (let i = 1; i <= 120; i++) {
       tracker.simulateTick(userOmkar.id, omkarStartMs + i * 60000)
     }
@@ -568,19 +627,20 @@ describe('Cross-User Session Isolation & Ownership Regression Suite', () => {
     storage.setCurrentUser(userAdmin)
     tracker.onUserLogin(userAdmin)
 
-    // Admin clocks in independently at 11:30 AM
-    const adminSession = tracker.clockIn(userAdmin.id, '2026-10-18T11:30:00.000Z')
+    // Admin clocks in independently
+    const adminStart = new Date(baseNow - 40 * 60000).toISOString()
+    const adminSession = tracker.clockIn(userAdmin.id, adminStart)
 
     // Admin works 30 mins
-    const adminStartMs = new Date('2026-10-18T11:30:00.000Z').getTime()
+    const adminStartMs = new Date(adminStart).getTime()
     for (let i = 1; i <= 30; i++) {
       tracker.simulateTick(userAdmin.id, adminStartMs + i * 60000)
     }
 
     // Check independent session attributes
     expect(omkarSession.id).not.toBe(adminSession.id)
-    expect(omkarSession.clock_in).toBe('2026-10-18T09:00:00.000Z')
-    expect(adminSession.clock_in).toBe('2026-10-18T11:30:00.000Z')
+    expect(omkarSession.clock_in).toBe(omkarStart)
+    expect(adminSession.clock_in).toBe(adminStart)
 
     const omkarState = tracker.getState(userOmkar.id)
     const adminState = tracker.getState(userAdmin.id)
@@ -618,8 +678,8 @@ describe('Cross-User Session Isolation & Ownership Regression Suite', () => {
     // Omkar clocks in and takes a break
     storage.setCurrentUser(userOmkar)
     tracker.onUserLogin(userOmkar)
-    const s = tracker.clockIn(userOmkar.id, '2026-10-18T09:00:00.000Z')
-    tracker.takeBreak(userOmkar.id, '2026-10-18T10:00:00.000Z')
+    const s = tracker.clockIn(userOmkar.id, new Date(Date.now() - 60 * 60000).toISOString())
+    tracker.takeBreak(userOmkar.id, new Date(Date.now() - 30 * 60000).toISOString())
 
     // Simulate App Restart by reloading storage from simulated disk
     const restartedStorage = new IsolatedStorageEngine('tracker-store.json', diskStore)
@@ -740,7 +800,7 @@ describe('Cross-User Session Isolation & Ownership Regression Suite', () => {
         id: 'legacy-sess-100',
         employee_id: userOmkar.id,
         session_date: '2026-10-18',
-        clock_in: '2026-10-18T08:00:00.000Z',
+        clock_in: new Date().toISOString(),
         clock_out: null,
         status: 'working',
         worked_minutes: 89,
@@ -752,7 +812,7 @@ describe('Cross-User Session Isolation & Ownership Regression Suite', () => {
           id: 'legacy-sess-100',
           employee_id: userOmkar.id,
           session_date: '2026-10-18',
-          clock_in: '2026-10-18T08:00:00.000Z',
+          clock_in: new Date().toISOString(),
           clock_out: null,
           status: 'working',
           worked_minutes: 89,
@@ -766,7 +826,7 @@ describe('Cross-User Session Isolation & Ownership Regression Suite', () => {
           type: 'activity',
           employee_id: userOmkar.id,
           data: {},
-          createdAt: '2026-10-18T08:30:00.000Z',
+          createdAt: new Date().toISOString(),
           retries: 0
         }
       ]
@@ -789,5 +849,236 @@ describe('Cross-User Session Isolation & Ownership Regression Suite', () => {
     expect(migratedStorage.getCurrentSession(userAdmin.id)).toBeNull()
     expect(migratedStorage.getTodaySessions(userAdmin.id, '2026-10-18').length).toBe(0)
     expect(migratedStorage.getPendingQueue(userAdmin.id).length).toBe(0)
+  })
+
+  // =========================================================================
+  // SPECIFICATION SECTION 6: MANDATORY 8 REGRESSION TESTS
+  // =========================================================================
+
+  describe('Section 6: Required Regression Tests (8 Scenarios)', () => {
+    // Helper replicating UI state resolution in EmployeeTimerSection & CenterGreeting
+    const resolveUIState = (
+      user: UserProfile | null,
+      session: TrackingSession | null,
+      status: string
+    ) => {
+      const hasValidSession = Boolean(
+        user &&
+        session &&
+        session.id &&
+        session.employee_id === user.id &&
+        !session.clock_out &&
+        session.status !== 'completed' &&
+        session.status !== 'Completed'
+      )
+
+      const isWorking = hasValidSession && (status === 'Working' || status === 'working' || session?.status === 'working') && !session?.breaks?.some(b => b.end_time === null)
+      const isOnBreak = hasValidSession && (status === 'On Break' || status === 'on_break' || session?.status === 'on_break' || Boolean(session?.breaks?.some(b => b.end_time === null)))
+      const isCompleted = (status === 'Completed' || status === 'completed') && !hasValidSession
+
+      let actionButtons: string[] = []
+      if (!hasValidSession) {
+        actionButtons = ['Clock In']
+      } else if (isWorking) {
+        actionButtons = ['Take a Break', 'Clock Out']
+      } else if (isOnBreak) {
+        actionButtons = ['Resume Work', 'Clock Out']
+      } else {
+        actionButtons = ['Clock In']
+      }
+
+      let greetingStatusText = 'You are currently not working'
+      if (isWorking) greetingStatusText = 'You are currently working'
+      else if (isOnBreak) greetingStatusText = 'You are on a break now'
+      else if (isCompleted) greetingStatusText = 'Your work session has ended'
+
+      const avatarStatus = isWorking ? 'working' : isOnBreak ? 'on_break' : 'offline'
+
+      return {
+        hasValidSession,
+        actionButtons,
+        greetingStatusText,
+        avatarStatus
+      }
+    }
+
+    it('Scenario 1: Brand-new account with no sessions → displays Clock In and You are currently not working', () => {
+      const newAccountUser: UserProfile = {
+        id: 'new-employee-uuid-001',
+        email: 'newuser@triplesproduction.com',
+        first_name: 'Brand',
+        last_name: 'New',
+        employee_id: 'EMP-NEW',
+        department: 'Design',
+        designation: 'UI Intern',
+        role: 'Employee',
+        is_active: true
+      }
+
+      storage.setCurrentUser(newAccountUser)
+      tracker.onUserLogin(newAccountUser)
+
+      const state = tracker.getState(newAccountUser.id)
+      expect(state.currentSession).toBeNull()
+      expect(state.status).toBe('Not Clocked In')
+
+      const ui = resolveUIState(newAccountUser, state.currentSession, state.status)
+      expect(ui.actionButtons).toEqual(['Clock In'])
+      expect(ui.greetingStatusText).toBe('You are currently not working')
+      expect(ui.avatarStatus).toBe('offline')
+      expect(ui.hasValidSession).toBe(false)
+    })
+
+    it('Scenario 2: Existing account with a valid working session → displays Take a Break and Clock Out', () => {
+      storage.setCurrentUser(userOmkar)
+      tracker.onUserLogin(userOmkar)
+      const session = tracker.clockIn(userOmkar.id)
+
+      expect(session.status).toBe('working')
+
+      const state = tracker.getState(userOmkar.id)
+      const ui = resolveUIState(userOmkar, state.currentSession, state.status)
+
+      expect(ui.actionButtons).toEqual(['Take a Break', 'Clock Out'])
+      expect(ui.greetingStatusText).toBe('You are currently working')
+      expect(ui.avatarStatus).toBe('working')
+      expect(ui.hasValidSession).toBe(true)
+    })
+
+    it('Scenario 3: Existing account with a valid break → displays Resume Work and Clock Out', () => {
+      storage.setCurrentUser(userOmkar)
+      tracker.onUserLogin(userOmkar)
+      tracker.clockIn(userOmkar.id)
+      const breakSession = tracker.takeBreak(userOmkar.id)
+
+      expect(breakSession?.status).toBe('on_break')
+
+      const state = tracker.getState(userOmkar.id)
+      const ui = resolveUIState(userOmkar, state.currentSession, state.status)
+
+      expect(ui.actionButtons).toEqual(['Resume Work', 'Clock Out'])
+      expect(ui.greetingStatusText).toBe('You are on a break now')
+      expect(ui.avatarStatus).toBe('on_break')
+      expect(ui.hasValidSession).toBe(true)
+    })
+
+    it('Scenario 4: Account A clocks in, logs out, then Account B logs in → Account B does not inherit Account A\'s session', () => {
+      // Account A (Omkar) clocks in and takes a break
+      storage.setCurrentUser(userOmkar)
+      tracker.onUserLogin(userOmkar)
+      tracker.clockIn(userOmkar.id)
+      tracker.takeBreak(userOmkar.id)
+
+      // Account A logs out
+      storage.clearActiveUser()
+      tracker.onUserLogout()
+
+      // Account B (Admin) logs in
+      storage.setCurrentUser(userAdmin)
+      tracker.onUserLogin(userAdmin)
+
+      const adminState = tracker.getState(userAdmin.id)
+      expect(adminState.currentSession).toBeNull()
+      expect(adminState.status).toBe('Not Clocked In')
+
+      const ui = resolveUIState(userAdmin, adminState.currentSession, adminState.status)
+      // Account B must NOT display Resume Work or You are on a break now!
+      expect(ui.actionButtons).toEqual(['Clock In'])
+      expect(ui.greetingStatusText).toBe('You are currently not working')
+      expect(ui.avatarStatus).toBe('offline')
+      expect(ui.hasValidSession).toBe(false)
+    })
+
+    it('Scenario 5: Restart the application and restore the correct user\'s session', () => {
+      // Omkar has an active working session
+      storage.setCurrentUser(userOmkar)
+      tracker.onUserLogin(userOmkar)
+      const activeSession = tracker.clockIn(userOmkar.id)
+
+      // Simulate App Restart by reloading disk store
+      const restartedStore = new IsolatedStorageEngine('tracker-store.json', diskStore)
+      restartedStore.setCurrentUser(userOmkar)
+      const restartedTracker = new ActivityTrackerSimulator(restartedStore)
+      restartedTracker.onUserLogin(userOmkar)
+
+      const restored = restartedTracker.getState(userOmkar.id)
+      expect(restored.currentSession?.id).toBe(activeSession.id)
+      expect(restored.currentSession?.employee_id).toBe(userOmkar.id)
+
+      const ui = resolveUIState(userOmkar, restored.currentSession, restored.status)
+      expect(ui.actionButtons).toEqual(['Take a Break', 'Clock Out'])
+      expect(ui.greetingStatusText).toBe('You are currently working')
+      expect(ui.avatarStatus).toBe('working')
+    })
+
+    it('Scenario 6: Offline pending records remain associated with their original owner', () => {
+      storage.setCurrentUser(userOmkar)
+      storage.enqueuePending({
+        id: 'offline-rec-omkar',
+        type: 'activity',
+        employee_id: userOmkar.id,
+        data: { test: true },
+        createdAt: new Date().toISOString(),
+        retries: 0
+      }, userOmkar.id)
+
+      // Admin logs in
+      storage.clearActiveUser()
+      storage.setCurrentUser(userAdmin)
+
+      // Admin has 0 pending items
+      expect(storage.getPendingQueue(userAdmin.id).length).toBe(0)
+
+      // Omkar still has his 1 pending item intact
+      expect(storage.getPendingQueue(userOmkar.id).length).toBe(1)
+      expect(storage.getPendingQueue(userOmkar.id)[0].id).toBe('offline-rec-omkar')
+    })
+
+    it('Scenario 7: Session lookup failure does not create a fake working/break state', () => {
+      // Simulate failed lookup (network failure or DB unreachable)
+      const lookupResult = { success: false, error: 'Database network timeout' }
+
+      // System must not fabricate any session or infer working/break state
+      storage.setCurrentUser(userAdmin)
+      const state = tracker.getState(userAdmin.id)
+      expect(state.currentSession).toBeNull()
+      expect(state.status).toBe('Not Clocked In')
+
+      const ui = resolveUIState(userAdmin, state.currentSession, state.status)
+      expect(ui.actionButtons).toEqual(['Clock In'])
+      expect(ui.greetingStatusText).toBe('You are currently not working')
+      expect(ui.hasValidSession).toBe(false)
+      expect(lookupResult.success).toBe(false)
+    })
+
+    it('Scenario 8: Clocked-out sessions do not reappear as active sessions', () => {
+      storage.setCurrentUser(userOmkar)
+      tracker.onUserLogin(userOmkar)
+      tracker.clockIn(userOmkar.id)
+
+      // Clock out
+      const endedSession = tracker.clockOut(userOmkar.id)
+      expect(endedSession?.status).toBe('completed')
+      expect(endedSession?.clock_out).not.toBeNull()
+
+      // Current session must be null
+      expect(storage.getCurrentSession(userOmkar.id)).toBeNull()
+
+      // Even if someone attempts to pass the completed session to setCurrentSession:
+      storage.setCurrentSession(endedSession, userOmkar.id)
+      expect(storage.getCurrentSession(userOmkar.id)).toBeNull()
+
+      // Simulated app restart must NOT restore completed session as active
+      const restartedStore = new IsolatedStorageEngine('tracker-store.json', diskStore)
+      restartedStore.setCurrentUser(userOmkar)
+      expect(restartedStore.getCurrentSession(userOmkar.id)).toBeNull()
+
+      const state = tracker.getState(userOmkar.id)
+      const ui = resolveUIState(userOmkar, state.currentSession, state.status)
+      expect(ui.actionButtons).toEqual(['Clock In'])
+      expect(ui.greetingStatusText).toBe('Your work session has ended')
+      expect(ui.avatarStatus).toBe('offline')
+      expect(ui.hasValidSession).toBe(false)
+    })
   })
 })

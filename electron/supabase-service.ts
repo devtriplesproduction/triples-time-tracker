@@ -15,6 +15,7 @@ const SUPABASE_ANON_KEY = process.env.VITE_SUPABASE_ANON_KEY || 'sb_publishable_
 class SupabaseService {
   private client: SupabaseClient
   private isSyncingQueue: boolean = false
+  private isSyncingERP: boolean = false
 
   constructor() {
     this.client = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
@@ -27,103 +28,206 @@ class SupabaseService {
       }
     })
 
-    // Restore saved session if available
-    this.initSession()
+    // Listen for auth state changes (e.g. background token refresh) and persist to safeStorage
+    this.client.auth.onAuthStateChange((event, session) => {
+      if (session) {
+        storage.setAuthTokens({
+          access_token: session.access_token,
+          refresh_token: session.refresh_token,
+          expires_at: session.expires_at
+        })
+      } else if (event === 'SIGNED_OUT') {
+        storage.setAuthTokens(null)
+      }
+    })
   }
 
-  public async initSession(): Promise<boolean> {
+  private isNetworkError(error: any): boolean {
+    if (!error) return false
+    const msg = (error.message || error.toString() || '').toLowerCase()
+    return (
+      msg.includes('fetch failed') ||
+      msg.includes('network') ||
+      msg.includes('enotfound') ||
+      msg.includes('econnrefused') ||
+      msg.includes('ehostunreach') ||
+      msg.includes('timed out') ||
+      msg.includes('timeout') ||
+      msg.includes('failed to fetch') ||
+      msg.includes('abort')
+    )
+  }
+
+  public async initSession(): Promise<{ success: boolean; user?: UserProfile; error?: string }> {
     try {
       const tokens = storage.getAuthTokens()
-      if (tokens && tokens.access_token && tokens.refresh_token) {
-        const { data, error } = await this.client.auth.setSession({
-          access_token: tokens.access_token,
-          refresh_token: tokens.refresh_token
-        })
-        if (error || !data.user) {
-          console.warn('[SupabaseService] Session restoration failed:', error?.message)
-          storage.setAuthTokens(null)
-          storage.clearActiveUser()
-          return false
-        }
+      if (!tokens || !tokens.access_token || !tokens.refresh_token) {
+        return { success: false }
+      }
 
-        // Check if user is deactivated or banned in Auth metadata
-        if (data.user.app_metadata?.deactivated || (data.user as any).banned_until) {
-          console.warn('[SupabaseService] User is deactivated or banned in Auth metadata.')
-          await this.logout()
-          return false
-        }
+      const { data, error } = await this.client.auth.setSession({
+        access_token: tokens.access_token,
+        refresh_token: tokens.refresh_token
+      })
 
-        // Verify active status of the employee from canonical profiles table
-        const { data: profile, error: pError } = await this.client
-          .from('profiles')
-          .select('id, first_name, last_name, employee_id, department, designation, role')
-          .eq('id', data.user.id)
-          .maybeSingle()
-
-        if (pError || !profile) {
-          console.warn('[SupabaseService] Session restoration failed - profile missing or query error:', pError?.message)
-          await this.logout()
-          return false
-        }
-
-        let department = profile.department || 'General'
-        let designation = profile.designation || 'Staff'
-
-        if (profile.employee_id) {
-          const { data: onboarding } = await this.client
-            .from('employee_onboarding')
-            .select('employment_status, department, designation')
-            .eq('employee_id_number', profile.employee_id)
-            .maybeSingle()
-
-          if (onboarding) {
-            if (onboarding.employment_status === 'Inactive' || onboarding.employment_status === 'Terminated') {
-              console.warn('[SupabaseService] Employee is inactive or terminated in onboarding. Revoking session.')
-              await this.logout()
-              return false
+      if (error) {
+        if (this.isNetworkError(error)) {
+          const cachedUser = storage.getCurrentUser()
+          if (cachedUser && cachedUser.id) {
+            console.log('[SupabaseService] Network unavailable during startup. Restoring cached user:', cachedUser.email)
+            activityTracker.onUserLogin(cachedUser)
+            return {
+              success: true,
+              user: cachedUser,
+              error: 'Offline mode: Network unavailable. Tracking will sync when connection is restored.'
             }
-            if (onboarding.department) department = onboarding.department
-            if (onboarding.designation) designation = onboarding.designation
+          }
+          return {
+            success: false,
+            error: 'Network unavailable. Please connect to the internet to sign in.'
           }
         }
 
-        const userProfile: UserProfile = {
-          id: profile.id,
-          email: data.user.email || '',
-          first_name: profile.first_name || 'Employee',
-          last_name: profile.last_name || null,
-          employee_id: profile.employee_id || null,
-          department,
-          designation,
-          role: (profile.role as any) || 'Employee',
-          is_active: true
+        console.warn('[SupabaseService] Session restoration failed (revoked or expired):', error.message)
+        storage.setAuthTokens(null)
+        storage.clearActiveUser()
+        activityTracker.onUserLogout()
+        try {
+          await this.client.auth.signOut()
+        } catch (_) {}
+        return {
+          success: false,
+          error: 'Your session has expired or was revoked. Please log in again.'
         }
-
-        storage.setCurrentUser(userProfile)
-
-        if (data.session) {
-          storage.setAuthTokens({
-            access_token: data.session.access_token,
-            refresh_token: data.session.refresh_token,
-            expires_at: data.session.expires_at
-          })
-        }
-
-        // Synchronize this employee's active session and today's sessions from DB
-        await this.syncEmployeeSessionsFromSupabase(userProfile.id)
-
-        // Inform tracker that user session is active
-        activityTracker.onUserLogin(userProfile)
-
-        // Flush this user's pending queue
-        this.flushPendingQueue(userProfile.id)
-
-        return true
       }
-    } catch (e) {
+
+      if (!data.user) {
+        storage.setAuthTokens(null)
+        storage.clearActiveUser()
+        activityTracker.onUserLogout()
+        return {
+          success: false,
+          error: 'Your session has expired. Please log in again.'
+        }
+      }
+
+      // Check if user is deactivated or banned in Auth metadata
+      if (data.user.app_metadata?.deactivated || (data.user as any).banned_until) {
+        console.warn('[SupabaseService] User is deactivated or banned in Auth metadata.')
+        await this.logout()
+        return {
+          success: false,
+          error: 'Your account has been deactivated. Please contact your administrator.'
+        }
+      }
+
+      // Verify active status of the employee from canonical profiles table
+      const { data: profile, error: pError } = await this.client
+        .from('profiles')
+        .select('id, first_name, last_name, employee_id, department, designation, role')
+        .eq('id', data.user.id)
+        .maybeSingle()
+
+      if (pError) {
+        if (this.isNetworkError(pError)) {
+          const cachedUser = storage.getCurrentUser()
+          if (cachedUser && cachedUser.id === data.user.id) {
+            activityTracker.onUserLogin(cachedUser)
+            return {
+              success: true,
+              user: cachedUser,
+              error: 'Offline mode: Using cached profile.'
+            }
+          }
+        }
+        console.warn('[SupabaseService] Session restoration failed - profile query error:', pError.message)
+        await this.logout()
+        return {
+          success: false,
+          error: 'Database error reading profile. Please log in again.'
+        }
+      }
+
+      if (!profile) {
+        console.warn('[SupabaseService] Session restoration failed - profile missing for user:', data.user.id)
+        await this.logout()
+        return {
+          success: false,
+          error: 'ERP profile not found. Please contact your administrator.'
+        }
+      }
+
+      let department = profile.department || null
+      let designation = profile.designation || null
+
+      if (profile.employee_id) {
+        const { data: onboarding } = await this.client
+          .from('employee_onboarding')
+          .select('employment_status, department, designation')
+          .eq('employee_id_number', profile.employee_id)
+          .maybeSingle()
+
+        if (onboarding) {
+          if (onboarding.employment_status === 'Inactive' || onboarding.employment_status === 'Terminated') {
+            console.warn('[SupabaseService] Employee is inactive or terminated in onboarding. Revoking session.')
+            await this.logout()
+            return {
+              success: false,
+              error: 'Your employment status is inactive or terminated. Contact HR.'
+            }
+          }
+          if (onboarding.department) department = onboarding.department
+          if (onboarding.designation) designation = onboarding.designation
+        }
+      }
+
+      const userProfile: UserProfile = {
+        id: profile.id,
+        email: data.user.email || '',
+        first_name: profile.first_name || 'Employee',
+        last_name: profile.last_name || null,
+        employee_id: profile.employee_id || null,
+        department,
+        designation,
+        role: (profile.role as any) || 'Employee',
+        is_active: true
+      }
+
+      storage.setCurrentUser(userProfile)
+
+      if (data.session) {
+        storage.setAuthTokens({
+          access_token: data.session.access_token,
+          refresh_token: data.session.refresh_token,
+          expires_at: data.session.expires_at
+        })
+      }
+
+      // Synchronize this employee's active session and today's sessions from DB
+      await this.syncEmployeeSessionsFromSupabase(userProfile.id)
+
+      // Inform tracker that user session is active
+      activityTracker.onUserLogin(userProfile)
+
+      // Flush this user's pending queue
+      this.flushPendingQueue(userProfile.id)
+
+      return { success: true, user: userProfile }
+    } catch (e: any) {
       console.warn('[SupabaseService] Exception during initSession:', e)
+      if (this.isNetworkError(e)) {
+        const cachedUser = storage.getCurrentUser()
+        if (cachedUser && cachedUser.id) {
+          activityTracker.onUserLogin(cachedUser)
+          return {
+            success: true,
+            user: cachedUser,
+            error: 'Offline mode: Network unavailable. Tracking will sync when connection is restored.'
+          }
+        }
+      }
+      return { success: false, error: e?.message || 'Authentication restoration failed' }
     }
-    return false
   }
 
   public async login(email: string, password: string): Promise<{ success: boolean; user?: UserProfile; error?: string }> {
@@ -162,8 +266,8 @@ class SupabaseService {
         return { success: false, error: 'ERP profile not found. Please contact your administrator.' }
       }
 
-      let department = profile.department || 'General'
-      let designation = profile.designation || 'Staff'
+      let department = profile.department || null
+      let designation = profile.designation || null
 
       if (profile.employee_id) {
         const { data: onboarding } = await this.client
@@ -219,19 +323,19 @@ class SupabaseService {
   }
 
   public async logout(): Promise<{ success: boolean }> {
-    // 1. Immediately inform activity tracker to clear active timers and buffers
+    // 1. Clear active user and auth tokens from storage first so that any emitted state belongs to null user
+    storage.setAuthTokens(null)
+    storage.clearActiveUser()
+
+    // 2. Inform activity tracker to reset in-memory buffers and emit clean 'Not Clocked In' state
     activityTracker.onUserLogout()
 
-    // 2. Sign out of Supabase
+    // 3. Sign out of Supabase
     try {
       await this.client.auth.signOut()
     } catch (e) {
       console.warn('[SupabaseService] Error during auth signOut:', e)
     }
-
-    // 3. Clear active session tokens and user without wiping their saved records
-    storage.setAuthTokens(null)
-    storage.clearActiveUser()
 
     return { success: true }
   }
@@ -239,30 +343,60 @@ class SupabaseService {
   /**
    * Queries Supabase for today's sessions strictly owned by employeeId.
    * If the DB contains an active session and local storage has none, restores it.
+   * If DB has no active session and no pending offline session creation, ensures currentSession is null.
    */
-  public async syncEmployeeSessionsFromSupabase(employeeId: string): Promise<void> {
+   public async syncEmployeeSessionsFromSupabase(employeeId: string): Promise<{ success: boolean; error?: string }> {
     try {
       const today = storage.getTodayBusinessDate()
+      // Query today's sessions or any open session for this employee (handling timezone or midnight boundary)
       const { data: dbSessions, error } = await this.client
         .from('time_sessions')
         .select('*, breaks:session_breaks(*)')
         .eq('employee_id', employeeId)
-        .eq('session_date', today)
+        .or(`session_date.eq.${today},clock_out.is.null`)
         .order('clock_in', { ascending: true })
 
       if (error) {
         console.warn(`[SupabaseService] Failed to fetch sessions for employee ${employeeId}:`, error.message)
-        return
+        return { success: false, error: error.message }
       }
 
+      // Check current local session
+      const localSession = storage.getCurrentSession(employeeId)
+      const isLocalActive = Boolean(
+        localSession &&
+        localSession.employee_id === employeeId &&
+        !localSession.clock_out &&
+        localSession.status !== 'completed' &&
+        localSession.status !== 'Completed'
+      )
+
+      // Check if there are any locally queued offline session creations
+      const pendingQueue = storage.getPendingQueue(employeeId)
+      const hasPendingSessionCreation = pendingQueue.some(
+        p => p.type === 'session' && (!p.data?.clock_out)
+      )
+
       if (!dbSessions || dbSessions.length === 0) {
-        // No sessions today in database for this employee
-        const localSession = storage.getCurrentSession(employeeId)
-        // If local has no session or is completed, keep it null
-        if (localSession && (localSession.status === 'Completed' || localSession.status === 'completed')) {
+        // No sessions found in DB for this employee
+        if (isLocalActive && localSession) {
+          // Do NOT clear an active local session if DB lookup returns empty or is lagging!
+          // Enqueue for sync if not already pending
+          if (!hasPendingSessionCreation) {
+            storage.enqueuePending({
+              id: `session-${localSession.id}`,
+              type: 'session',
+              employee_id: employeeId,
+              data: localSession,
+              createdAt: new Date().toISOString(),
+              retries: 0
+            }, employeeId)
+          }
+        } else if (!hasPendingSessionCreation) {
           storage.setCurrentSession(null, employeeId)
+          storage.setTodaySessions([], employeeId)
         }
-        return
+        return { success: true }
       }
 
       const formattedSessions: TrackingSession[] = dbSessions.map((s: any) => ({
@@ -286,28 +420,51 @@ class SupabaseService {
         })) : []
       }))
 
+      // If local session is active, ensure it is preserved in todaySessions list
+      if (isLocalActive && localSession && !formattedSessions.some(s => s.id === localSession.id)) {
+        formattedSessions.push(localSession)
+      }
+
       storage.setTodaySessions(formattedSessions, employeeId)
 
-      // Check if there is an active session in DB
+      // Find an active session in DB (clock_out is null and status is working or on_break)
       const activeDbSession = formattedSessions.find(
-        s => s.status === 'working' || s.status === 'Working' || s.status === 'on_break' || s.status === 'On Break'
+        s => !s.clock_out && (s.status === 'working' || s.status === 'Working' || s.status === 'on_break' || s.status === 'On Break')
       )
 
-      const localSession = storage.getCurrentSession(employeeId)
-
       if (activeDbSession) {
-        if (!localSession || localSession.id !== activeDbSession.id) {
-          // Restore DB active session
-          storage.setCurrentSession(activeDbSession, employeeId)
-        }
-      } else {
-        // No active session in DB; ensure local current session is null
-        if (localSession && (localSession.status === 'completed' || localSession.status === 'Completed')) {
+        const validated = storage.validateActiveSession(activeDbSession, employeeId)
+        if (validated) {
+          // If local has newer worked_minutes or active buffers, preserve them
+          if (isLocalActive && localSession && localSession.id === validated.id) {
+            validated.worked_minutes = Math.max(validated.worked_minutes, localSession.worked_minutes)
+            validated.active_minutes = Math.max(validated.active_minutes, localSession.active_minutes)
+            validated.active_seconds_buffer = localSession.active_seconds_buffer || 0
+            validated.suspended_seconds = Math.max(validated.suspended_seconds || 0, localSession.suspended_seconds || 0)
+          }
+          storage.setCurrentSession(validated, employeeId)
+        } else {
           storage.setCurrentSession(null, employeeId)
         }
+      } else {
+        // No active session in DB.
+        // Check if DB explicitly has localSession marked completed or clocked out
+        const explicitlyEndedInDb = isLocalActive && formattedSessions.some(
+          s => s.id === localSession!.id && (s.clock_out !== null || s.status === 'completed' || s.status === 'Completed')
+        )
+
+        if (explicitlyEndedInDb) {
+          storage.setCurrentSession(null, employeeId)
+        } else if (!isLocalActive && !hasPendingSessionCreation) {
+          storage.setCurrentSession(null, employeeId)
+        }
+        // If isLocalActive and not explicitly ended in DB, PRESERVE localSession!
       }
-    } catch (e) {
+
+      return { success: true }
+    } catch (e: any) {
       console.warn('[SupabaseService] Error syncing employee sessions from Supabase:', e)
+      return { success: false, error: e?.message || 'Error querying sessions' }
     }
   }
 
@@ -384,18 +541,23 @@ class SupabaseService {
       // Session sync succeeded, remove from pending queue
       storage.removePending(`session-${session.id}`, session.employee_id)
 
-      // 2. Sync breaks
+      // 2. Sync breaks in batch
       if (session.breaks && session.breaks.length > 0) {
-        for (const b of session.breaks) {
-          const { error: bErr } = await this.client.from('session_breaks').upsert({
-            id: b.id,
-            session_id: session.id,
-            start_time: b.start_time,
-            end_time: b.end_time,
-            duration_minutes: b.duration_minutes,
-            reason: b.reason || 'Break'
-          })
-          if (bErr) {
+        const breakPayload = session.breaks.map(b => ({
+          id: b.id,
+          session_id: session.id,
+          start_time: b.start_time,
+          end_time: b.end_time,
+          duration_minutes: b.duration_minutes,
+          reason: b.reason || 'Break'
+        }))
+        const { error: bErr } = await this.client.from('session_breaks').upsert(breakPayload)
+        if (!bErr) {
+          for (const b of session.breaks) {
+            storage.removePending(`break-${b.id}`, session.employee_id)
+          }
+        } else {
+          for (const b of session.breaks) {
             storage.enqueuePending({
               id: `break-${b.id}`,
               type: 'break',
@@ -404,27 +566,30 @@ class SupabaseService {
               createdAt: new Date().toISOString(),
               retries: 0
             }, session.employee_id)
-          } else {
-            storage.removePending(`break-${b.id}`, session.employee_id)
           }
         }
       }
 
-      // 3. Sync recent activity intervals
+      // 3. Sync recent activity intervals in batch
       const recentLogs = storage.getActivityLogs(session.employee_id, session.id).slice(-20)
       if (recentLogs.length > 0) {
-        for (const log of recentLogs) {
-          const { error: logErr } = await this.client.from('activity_logs').upsert({
-            id: log.id,
-            session_id: log.session_id,
-            employee_id: session.employee_id,
-            start_time: log.start_time,
-            end_time: log.end_time,
-            active_seconds: log.active_seconds,
-            app_name: log.app_name || 'Desktop Work',
-            window_title: (log.window_title || '').slice(0, 255)
-          })
-          if (logErr) {
+        const logPayload = recentLogs.map(log => ({
+          id: log.id,
+          session_id: log.session_id,
+          employee_id: session.employee_id,
+          start_time: log.start_time,
+          end_time: log.end_time,
+          active_seconds: log.active_seconds,
+          app_name: log.app_name || 'Desktop Work',
+          window_title: (log.window_title || '').slice(0, 255)
+        }))
+        const { error: logErr } = await this.client.from('activity_logs').upsert(logPayload)
+        if (!logErr) {
+          for (const log of recentLogs) {
+            storage.removePending(`log-${log.id}`, session.employee_id)
+          }
+        } else {
+          for (const log of recentLogs) {
             storage.enqueuePending({
               id: `log-${log.id}`,
               type: 'activity',
@@ -433,8 +598,6 @@ class SupabaseService {
               createdAt: new Date().toISOString(),
               retries: 0
             }, session.employee_id)
-          } else {
-            storage.removePending(`log-${log.id}`, session.employee_id)
           }
         }
       }
@@ -528,20 +691,26 @@ class SupabaseService {
   }
 
   public async syncWithERP(): Promise<{ success: boolean; error?: string }> {
-    const user = storage.getCurrentUser()
-    if (!user) return { success: true }
+    if (this.isSyncingERP) return { success: true }
+    this.isSyncingERP = true
+    try {
+      const user = storage.getCurrentUser()
+      if (!user) return { success: true }
 
-    await this.flushPendingQueue(user.id)
-    const session = storage.getCurrentSession(user.id)
-    if (session) {
-      return this.syncSession(session)
+      await this.flushPendingQueue(user.id)
+      const session = storage.getCurrentSession(user.id)
+      if (session) {
+        return await this.syncSession(session)
+      }
+      const todaySessions = storage.getTodaySessions(user.id)
+      if (todaySessions.length > 0) {
+        const lastSession = todaySessions[todaySessions.length - 1]
+        return await this.syncSession(lastSession)
+      }
+      return { success: true }
+    } finally {
+      this.isSyncingERP = false
     }
-    const todaySessions = storage.getTodaySessions(user.id)
-    if (todaySessions.length > 0) {
-      const lastSession = todaySessions[todaySessions.length - 1]
-      return this.syncSession(lastSession)
-    }
-    return { success: true }
   }
 }
 

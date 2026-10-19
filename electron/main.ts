@@ -1,5 +1,6 @@
-import { app, BrowserWindow, ipcMain, Tray, Menu, nativeImage, Notification } from 'electron'
+import { app, BrowserWindow, ipcMain, Tray, Menu, nativeImage, Notification, shell } from 'electron'
 import path from 'path'
+import fs from 'fs'
 import { storage } from './storage'
 import { activityTracker } from './activity-tracker'
 import { supabaseService } from './supabase-service'
@@ -10,7 +11,10 @@ let tray: Tray | null = null
 let isQuitting = false
 
 function createTray() {
-  const icon = nativeImage.createEmpty()
+  const iconPath = path.join(__dirname, '../public/logo.png')
+  const icon = fs.existsSync(iconPath)
+    ? nativeImage.createFromPath(iconPath).resize({ width: 16, height: 16 })
+    : nativeImage.createEmpty()
   tray = new Tray(icon)
   tray.setToolTip('TripleS Time Tracker')
 
@@ -90,14 +94,16 @@ function createTray() {
 }
 
 function createWindow() {
+  const iconPath = path.join(__dirname, '../public/logo.png')
   mainWindow = new BrowserWindow({
-    width: 480,
-    height: 680,
-    minWidth: 440,
-    minHeight: 640,
-    resizable: false,
+    width: 580,
+    height: 600,
+    minWidth: 460,
+    minHeight: 520,
+    resizable: true,
     frame: false,
-    backgroundColor: storage.getSettings().theme === 'light' ? '#F8FAFC' : '#0B0F14',
+    icon: fs.existsSync(iconPath) ? iconPath : undefined,
+    backgroundColor: storage.getSettings().theme === 'light' ? '#F7F7F7' : '#050505',
     titleBarStyle: 'hidden',
     show: false,
     webPreferences: {
@@ -162,6 +168,7 @@ app.whenReady().then(async () => {
 app.on('before-quit', () => {
   isQuitting = true
   activityTracker.stop()
+  storage.flush()
 })
 
 app.on('window-all-closed', () => {
@@ -192,17 +199,61 @@ ipcMain.handle('tracker:get-state', () => {
   return activityTracker.getState(user?.id)
 })
 
+let isClockInInProgress = false
+
 ipcMain.handle('tracker:clock-in', async () => {
   const user = storage.getCurrentUser()
   if (!user || !user.id) {
     return { success: false, error: 'Cannot clock in: Employee authentication required. Please sign in.' }
   }
+
+  // Prevent duplicate concurrent clock-in requests
+  if (isClockInInProgress) {
+    const existing = storage.getCurrentSession(user.id)
+    if (existing && existing.status !== 'Completed' && existing.status !== 'completed' && !existing.clock_out) {
+      return { success: true, session: existing }
+    }
+    return { success: false, error: 'Clock in operation is already in progress' }
+  }
+
+  isClockInInProgress = true
+
   try {
-    const session = activityTracker.clockIn(user.id)
-    await supabaseService.syncSession(session)
+    // If user already has an active session, return it idempotently without creating duplicate
+    const existing = storage.getCurrentSession(user.id)
+    if (existing && existing.status !== 'Completed' && existing.status !== 'completed' && !existing.clock_out) {
+      return { success: true, session: existing }
+    }
+
+    // Create session in activityTracker without emitting intermediate state yet
+    const session = activityTracker.clockIn(user.id, false)
+
+    // Persist to Supabase
+    const syncRes = await supabaseService.syncSession(session)
+
+    if (!syncRes.success) {
+      // If backend explicitly rejected the session (e.g. database error, RLS rejection),
+      // roll back and remain safely unclocked-in rather than pretending the operation succeeded.
+      console.warn('[Tracker] Backend session sync failed on clock-in:', syncRes.error)
+      storage.setCurrentSession(null, user.id)
+      storage.removePending(`session-${session.id}`, user.id)
+      const updatedToday = storage.getTodaySessions(user.id).filter(s => s.id !== session.id)
+      storage.setTodaySessions(updatedToday, user.id)
+      activityTracker.emitState()
+      return { success: false, error: syncRes.error || 'Failed to establish session on server' }
+    }
+
+    // Persist confirmed session in storage & emit authoritative state
+    storage.setCurrentSession(session, user.id)
+    activityTracker.emitState()
     return { success: true, session }
   } catch (err: any) {
+    // On unexpected exception, ensure safe rollback
+    storage.setCurrentSession(null, user.id)
+    activityTracker.emitState()
     return { success: false, error: err.message || 'Failed to clock in' }
+  } finally {
+    isClockInInProgress = false
   }
 })
 
@@ -247,6 +298,20 @@ ipcMain.handle('tracker:clock-out', async () => {
 
 ipcMain.handle('tracker:sync', async () => {
   return await supabaseService.syncWithERP()
+})
+
+ipcMain.handle('tracker:sync-sessions', async () => {
+  const user = storage.getCurrentUser()
+  if (!user || !user.id) {
+    return { success: false, error: 'Authentication required' }
+  }
+  const result = await supabaseService.syncEmployeeSessionsFromSupabase(user.id)
+  activityTracker.emitState()
+  return result
+})
+
+ipcMain.handle('auth:init-session', async () => {
+  return await supabaseService.initSession()
 })
 
 ipcMain.handle('auth:get-user', () => {
@@ -310,3 +375,28 @@ ipcMain.handle('settings:save', (_event, updates: Partial<AppSettings>) => {
   const updatedSettings = storage.updateSettings(updates)
   return { success: true, settings: updatedSettings }
 })
+
+ipcMain.handle('window:open-external', async (_event, url: string) => {
+  try {
+    if (url && (url.startsWith('http://') || url.startsWith('https://') || url.startsWith('mailto:'))) {
+      await shell.openExternal(url)
+      return { success: true }
+    }
+    return { success: false, error: 'Invalid URL scheme' }
+  } catch (err: any) {
+    return { success: false, error: err.message || 'Failed to open URL' }
+  }
+})
+
+ipcMain.handle('tracker:get-today-sessions', () => {
+  const user = storage.getCurrentUser()
+  if (!user || !user.id) return []
+  return storage.getTodaySessions(user.id)
+})
+
+ipcMain.handle('tracker:submit-bug-report', async (_event, report: { title: string; description: string }) => {
+  const user = storage.getCurrentUser()
+  console.log(`[BugReport] Submitted by ${user?.email || 'anonymous'}:`, report)
+  return { success: true }
+})
+

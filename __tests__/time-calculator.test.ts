@@ -428,4 +428,303 @@ describe('Inactivity Threshold & Permissions', () => {
   })
 })
 
+import {
+  getKolkataGreeting,
+  calculateDailyWorkedSeconds,
+  calculateDailyActiveSeconds,
+  formatSecondsToHHMMSS
+} from '../src/utils/timeCalculator'
 
+describe('Daily Timer — Reset at Midnight & 24-Hour Cap', () => {
+  it('formats daily timer as clean digital text HH:MM:SS', () => {
+    expect(formatSecondsToHHMMSS(0)).toBe('00:00:00')
+    expect(formatSecondsToHHMMSS(476)).toBe('00:07:56') // 7m 56s
+    expect(formatSecondsToHHMMSS(468)).toBe('00:07:48') // 7m 48s
+    expect(formatSecondsToHHMMSS(21256)).toBe('05:54:16') // 5h 54m 16s
+    expect(formatSecondsToHHMMSS(86400)).toBe('24:00:00') // 24h
+  })
+
+  it('caps the daily timer at 24:00:00 maximum', () => {
+    // Exceeding 24 hours should never display more than 24:00:00
+    expect(formatSecondsToHHMMSS(90000)).toBe('24:00:00')
+    expect(formatSecondsToHHMMSS(100000)).toBe('24:00:00')
+  })
+
+  it('splits session working across midnight between the two calendar dates (11:00 PM to 1:00 AM)', () => {
+    // In IST:
+    // 2026-10-19 23:00:00 IST is 2026-10-19T17:30:00.000Z
+    // 2026-10-20 00:00:00 IST is 2026-10-19T18:30:00.000Z (midnight)
+    // 2026-10-20 01:00:00 IST is 2026-10-19T19:30:00.000Z
+    const sessionAcrossMidnight: any = {
+      id: 'session-midnight-1',
+      employee_id: 'emp-omkar',
+      session_date: '2026-10-19',
+      clock_in: '2026-10-19T17:30:00.000Z', // 11:00 PM IST on Oct 19
+      clock_out: '2026-10-19T19:30:00.000Z', // 01:00 AM IST on Oct 20
+      status: 'completed',
+      worked_minutes: 120,
+      active_minutes: 120,
+      breaks: []
+    }
+
+    // 1. Calculate worked seconds on Day 1 (Oct 19)
+    const day1Seconds = calculateDailyWorkedSeconds(null, [sessionAcrossMidnight], '2026-10-19')
+    expect(day1Seconds).toBe(3600) // Exactly 1 hour = 3600 seconds
+    expect(formatSecondsToHHMMSS(day1Seconds)).toBe('01:00:00')
+
+    // 2. Calculate worked seconds on Day 2 (Oct 20)
+    const day2Seconds = calculateDailyWorkedSeconds(null, [sessionAcrossMidnight], '2026-10-20')
+    expect(day2Seconds).toBe(3600) // Exactly 1 hour = 3600 seconds
+    expect(formatSecondsToHHMMSS(day2Seconds)).toBe('01:00:00')
+  })
+
+  it('resets live daily timer to 00:00:00 at midnight while session remains active and working', () => {
+    // User clocked in at 11:00 PM IST (23:00) on 2026-10-19
+    const activeSession: any = {
+      id: 'active-session-1',
+      employee_id: 'emp-omkar',
+      session_date: '2026-10-19',
+      clock_in: '2026-10-19T17:30:00.000Z',
+      clock_out: null,
+      status: 'working',
+      worked_minutes: 0,
+      active_minutes: 0,
+      breaks: []
+    }
+
+    // At 11:59:59 PM IST (23:59:59) on Oct 19
+    const justBeforeMidnightMs = new Date('2026-10-19T18:29:59.000Z').getTime()
+    const timerBeforeMidnight = calculateDailyWorkedSeconds(activeSession, [], '2026-10-19', justBeforeMidnightMs)
+    expect(timerBeforeMidnight).toBe(3599) // 59m 59s
+    expect(formatSecondsToHHMMSS(timerBeforeMidnight)).toBe('00:59:59')
+
+    // At 12:00:00 AM IST (midnight) on Oct 20
+    const exactlyMidnightMs = new Date('2026-10-19T18:30:00.000Z').getTime()
+    const timerAtMidnight = calculateDailyWorkedSeconds(activeSession, [], '2026-10-20', exactlyMidnightMs)
+    expect(timerAtMidnight).toBe(0) // Resets to 00:00:00!
+    expect(formatSecondsToHHMMSS(timerAtMidnight)).toBe('00:00:00')
+
+    // 5 minutes past midnight (12:05:00 AM IST on Oct 20)
+    const fiveAfterMidnightMs = new Date('2026-10-19T18:35:00.000Z').getTime()
+    const timerAfterMidnight = calculateDailyWorkedSeconds(activeSession, [], '2026-10-20', fiveAfterMidnightMs)
+    expect(timerAfterMidnight).toBe(300) // 5 minutes = 300s
+    expect(formatSecondsToHHMMSS(timerAfterMidnight)).toBe('00:05:00')
+
+    // Session remains active: status is still working and clock_out is still null!
+    expect(activeSession.status).toBe('working')
+    expect(activeSession.clock_out).toBeNull()
+  })
+
+  it('excludes break time from daily timer calculation on date boundary', () => {
+    // User clocked in at 11:00 PM IST (23:00) on 2026-10-19
+    // Break from 11:45 PM to 12:15 AM IST (30 mins total: 15m on Oct 19, 15m on Oct 20)
+    const sessionWithBreak: any = {
+      id: 'session-break-midnight',
+      employee_id: 'emp-omkar',
+      session_date: '2026-10-19',
+      clock_in: '2026-10-19T17:30:00.000Z', // 23:00 IST
+      clock_out: '2026-10-19T19:30:00.000Z', // 01:00 IST next day
+      status: 'completed',
+      worked_minutes: 90,
+      active_minutes: 90,
+      breaks: [
+        {
+          id: 'b1',
+          session_id: 'session-break-midnight',
+          start_time: '2026-10-19T18:15:00.000Z', // 23:45 IST
+          end_time: '2026-10-19T18:45:00.000Z',   // 00:15 IST
+          duration_minutes: 30
+        }
+      ]
+    }
+
+    // Day 1: 1 hour elapsed (23:00 - 24:00) minus 15 min break = 45 mins (2700s)
+    const day1Seconds = calculateDailyWorkedSeconds(null, [sessionWithBreak], '2026-10-19')
+    expect(day1Seconds).toBe(2700)
+    expect(formatSecondsToHHMMSS(day1Seconds)).toBe('00:45:00')
+
+    // Day 2: 1 hour elapsed (00:00 - 01:00) minus 15 min break = 45 mins (2700s)
+    const day2Seconds = calculateDailyWorkedSeconds(null, [sessionWithBreak], '2026-10-20')
+    expect(day2Seconds).toBe(2700)
+    expect(formatSecondsToHHMMSS(day2Seconds)).toBe('00:45:00')
+  })
+})
+
+describe('Dynamic Greeting Based on Asia/Kolkata Time', () => {
+  it('greets Good Morning between 5:00 AM and 11:59 AM', () => {
+    // 05:00 AM IST = 23:30 UTC prev day
+    const morningStart = new Date('2026-10-18T23:30:00.000Z')
+    expect(getKolkataGreeting(morningStart, 'Omkar Sawant').fullGreeting).toBe('Good Morning, Omkar Sawant')
+
+    // 09:30 AM IST = 04:00 UTC
+    const midMorning = new Date('2026-10-19T04:00:00.000Z')
+    expect(getKolkataGreeting(midMorning, 'Omkar Sawant').fullGreeting).toBe('Good Morning, Omkar Sawant')
+
+    // 11:59 AM IST = 06:29 UTC
+    const morningEnd = new Date('2026-10-19T06:29:59.000Z')
+    expect(getKolkataGreeting(morningEnd, 'Omkar Sawant').fullGreeting).toBe('Good Morning, Omkar Sawant')
+  })
+
+  it('greets Good Afternoon between 12:00 PM and 4:59 PM', () => {
+    // 12:00 PM IST = 06:30 UTC
+    const afternoonStart = new Date('2026-10-19T06:30:00.000Z')
+    expect(getKolkataGreeting(afternoonStart, 'Omkar Sawant').fullGreeting).toBe('Good Afternoon, Omkar Sawant')
+
+    // 04:59 PM IST = 11:29 UTC
+    const afternoonEnd = new Date('2026-10-19T11:29:59.000Z')
+    expect(getKolkataGreeting(afternoonEnd, 'Omkar Sawant').fullGreeting).toBe('Good Afternoon, Omkar Sawant')
+  })
+
+  it('greets Good Evening between 5:00 PM and 8:59 PM', () => {
+    // 05:00 PM IST = 11:30 UTC
+    const eveningStart = new Date('2026-10-19T11:30:00.000Z')
+    expect(getKolkataGreeting(eveningStart, 'Omkar Sawant').fullGreeting).toBe('Good Evening, Omkar Sawant')
+
+    // 08:59 PM IST = 15:29 UTC
+    const eveningEnd = new Date('2026-10-19T15:29:59.000Z')
+    expect(getKolkataGreeting(eveningEnd, 'Omkar Sawant').fullGreeting).toBe('Good Evening, Omkar Sawant')
+  })
+
+  it('greets Good Night between 9:00 PM and 4:59 AM', () => {
+    // 09:00 PM IST = 15:30 UTC
+    const nightStart = new Date('2026-10-19T15:30:00.000Z')
+    expect(getKolkataGreeting(nightStart, 'Omkar Sawant').fullGreeting).toBe('Good Night, Omkar Sawant')
+
+    // 00:30 AM IST (midnight) = 19:00 UTC
+    const midnight = new Date('2026-10-19T19:00:00.000Z')
+    expect(getKolkataGreeting(midnight, 'Omkar Sawant').fullGreeting).toBe('Good Night, Omkar Sawant')
+
+    // 04:59 AM IST = 23:29 UTC
+    const nightEnd = new Date('2026-10-19T23:29:59.000Z')
+    expect(getKolkataGreeting(nightEnd, 'Omkar Sawant').fullGreeting).toBe('Good Night, Omkar Sawant')
+  })
+
+  it('shows generic greeting when user profile is loading or absent', () => {
+    const morning = new Date('2026-10-19T04:00:00.000Z') // 9:30 AM IST
+    expect(getKolkataGreeting(morning, null).fullGreeting).toBe('Good Morning')
+    expect(getKolkataGreeting(morning, undefined).fullGreeting).toBe('Good Morning')
+    expect(getKolkataGreeting(morning, '').fullGreeting).toBe('Good Morning')
+  })
+})
+
+describe('Break Transition & Freeze Regression Suite', () => {
+  it('freezes daily worked time immediately when session enters on_break with open break', () => {
+    // Clock in at 10:00:00 AM IST (04:30:00 UTC)
+    const clockInMs = new Date('2026-10-19T04:30:00.000Z').getTime()
+    const activeSession: any = {
+      id: 'break-session-1',
+      employee_id: 'emp-omkar',
+      session_date: '2026-10-19',
+      clock_in: new Date(clockInMs).toISOString(),
+      clock_out: null,
+      status: 'working',
+      worked_minutes: 0,
+      active_minutes: 0,
+      breaks: []
+    }
+
+    // After 30 minutes (10:30:00 AM IST) -> 1800 seconds
+    const timeAtBreakMs = clockInMs + 30 * 60 * 1000
+    const workedBeforeBreak = calculateDailyWorkedSeconds(activeSession, [], '2026-10-19', timeAtBreakMs)
+    expect(workedBeforeBreak).toBe(1800)
+    expect(formatSecondsToHHMMSS(workedBeforeBreak)).toBe('00:30:00')
+
+    // Click "Take a Break" at 10:30:00 AM IST
+    activeSession.status = 'on_break'
+    activeSession.breaks.push({
+      id: 'brk-1',
+      start_time: new Date(timeAtBreakMs).toISOString(),
+      end_time: null,
+      duration_minutes: 0
+    })
+
+    // 15 minutes into the break (10:45:00 AM IST)
+    const duringBreakMs = timeAtBreakMs + 15 * 60 * 1000
+    const workedDuringBreak = calculateDailyWorkedSeconds(activeSession, [], '2026-10-19', duringBreakMs)
+    // CRITICAL: Must be frozen at exactly 1800s (30m 00s), NOT 45m!
+    expect(workedDuringBreak).toBe(1800)
+    expect(formatSecondsToHHMMSS(workedDuringBreak)).toBe('00:30:00')
+
+    // 30 minutes into the break (11:00:00 AM IST)
+    const endOfBreakMs = timeAtBreakMs + 30 * 60 * 1000
+    const workedStillOnBreak = calculateDailyWorkedSeconds(activeSession, [], '2026-10-19', endOfBreakMs)
+    expect(workedStillOnBreak).toBe(1800)
+
+    // Click "Resume Work" at 11:00:00 AM IST
+    activeSession.breaks[0].end_time = new Date(endOfBreakMs).toISOString()
+    activeSession.breaks[0].duration_minutes = 30
+    activeSession.status = 'working'
+
+    // At exact moment of resume, timer is still 1800s (does not jump or reset to zero!)
+    const workedAtResume = calculateDailyWorkedSeconds(activeSession, [], '2026-10-19', endOfBreakMs)
+    expect(workedAtResume).toBe(1800)
+    expect(formatSecondsToHHMMSS(workedAtResume)).toBe('00:30:00')
+
+    // 20 minutes after resuming (11:20:00 AM IST)
+    const afterResumeMs = endOfBreakMs + 20 * 60 * 1000
+    const workedAfterResume = calculateDailyWorkedSeconds(activeSession, [], '2026-10-19', afterResumeMs)
+    // Elapsed wall-clock is 80 mins; minus 30 mins break = 50 mins = 3000 seconds
+    expect(workedAfterResume).toBe(3000)
+    expect(formatSecondsToHHMMSS(workedAfterResume)).toBe('00:50:00')
+  })
+
+  it('calculates Active Hours correctly excluding break intervals and inactive periods', () => {
+    const session: any = {
+      id: 'active-hours-session',
+      employee_id: 'emp-omkar',
+      session_date: '2026-10-19',
+      clock_in: '2026-10-19T04:30:00.000Z', // 10:00 AM IST
+      clock_out: '2026-10-19T06:30:00.000Z', // 12:00 PM IST (2 hours elapsed)
+      status: 'completed',
+      worked_minutes: 90, // 90 mins worked (30 mins break)
+      active_minutes: 75, // 75 mins of active keyboard/mouse activity
+      active_seconds_buffer: 24,
+      breaks: [
+        {
+          id: 'brk-lunch',
+          start_time: '2026-10-19T05:00:00.000Z',
+          end_time: '2026-10-19T05:30:00.000Z',
+          duration_minutes: 30
+        }
+      ]
+    }
+
+    const dailyActiveSeconds = calculateDailyActiveSeconds(null, [session], '2026-10-19')
+    // 75 minutes * 60 + 24 seconds = 4524 seconds (1h 15m 24s)
+    expect(dailyActiveSeconds).toBe(4524)
+    expect(formatSecondsToHHMMSS(dailyActiveSeconds)).toBe('01:15:24')
+
+    // Daily Worked seconds should be 90 minutes = 5400 seconds (1h 30m 00s)
+    const dailyWorkedSeconds = calculateDailyWorkedSeconds(null, [session], '2026-10-19')
+    expect(dailyWorkedSeconds).toBe(5400)
+    expect(formatSecondsToHHMMSS(dailyWorkedSeconds)).toBe('01:30:00')
+
+    // Active Hours is strictly less than Worked Hours and never interchangeable
+    expect(dailyActiveSeconds).toBeLessThan(dailyWorkedSeconds)
+  })
+
+  it('resolves employee designation properly and falls back to "Designation not assigned"', () => {
+    // Helper matching UI resolution logic
+    const resolveDesignation = (user: { designation?: string | null; role?: string } | null): string => {
+      if (!user) return 'Sign in to start tracking'
+      return user.designation || 'Designation not assigned'
+    }
+
+    // 1. Authenticated user with real designation
+    const devUser = { designation: 'Software Developer', role: 'Employee' }
+    expect(resolveDesignation(devUser)).toBe('Software Developer')
+
+    // 2. User with null designation (e.g. newly onboarded without assignment)
+    const unassignedUser = { designation: null, role: 'Employee' }
+    expect(resolveDesignation(unassignedUser)).toBe('Designation not assigned')
+
+    // 3. User with undefined designation
+    const undefinedUser = { role: 'Admin' }
+    expect(resolveDesignation(undefinedUser)).toBe('Designation not assigned')
+
+    // 4. Role (Admin, HR, Employee) is NEVER confused with designation
+    const adminUser = { designation: null, role: 'Admin' }
+    expect(resolveDesignation(adminUser)).toBe('Designation not assigned')
+    expect(resolveDesignation(adminUser)).not.toBe('Admin')
+  })
+})

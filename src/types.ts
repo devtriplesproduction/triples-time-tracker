@@ -61,6 +61,9 @@ export interface TrackingState {
   currentSession: TrackingSession | null
   todayWorkedMinutes: number
   todayActiveMinutes: number
+  todayWorkedSeconds?: number
+  todayActiveSeconds?: number
+  todaySessions?: TrackingSession[]
   activeAppName: string
   isIdle: boolean
   idleSeconds: number
@@ -83,16 +86,21 @@ export interface ElectronAPI {
   maximizeWindow: () => void
   closeWindow: () => void
   getTrackingState: () => Promise<TrackingState>
+  getTodaySessions?: () => Promise<TrackingSession[]>
   clockIn: () => Promise<{ success: boolean; session?: TrackingSession; error?: string }>
   takeBreak: (reason?: string) => Promise<{ success: boolean; session?: TrackingSession; error?: string }>
   resumeBreak: () => Promise<{ success: boolean; session?: TrackingSession; error?: string }>
   clockOut: () => Promise<{ success: boolean; session?: TrackingSession; error?: string }>
   syncWithERP: () => Promise<{ success: boolean; error?: string }>
+  syncSessions?: () => Promise<{ success: boolean; error?: string }>
+  initSession?: () => Promise<{ success: boolean; user?: UserProfile; error?: string }>
   getAuthUser: () => Promise<UserProfile | null>
   login: (email: string, password: string) => Promise<{ success: boolean; user?: UserProfile; error?: string }>
   logout: () => Promise<{ success: boolean }>
   getSettings: () => Promise<AppSettings>
   saveSettings: (settings: Partial<AppSettings>) => Promise<{ success: boolean; error?: string }>
+  openExternal?: (url: string) => Promise<void>
+  submitBugReport?: (report: { title: string; description: string }) => Promise<{ success: boolean; error?: string }>
   onStateUpdate: (callback: (state: TrackingState) => void) => () => void
 }
 

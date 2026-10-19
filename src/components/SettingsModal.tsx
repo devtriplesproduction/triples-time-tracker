@@ -1,5 +1,5 @@
 import React, { useState } from 'react'
-import { X, Sliders, RefreshCw, LogOut, Check, Shield } from 'lucide-react'
+import { X, Sliders, RefreshCw, LogOut, Check } from 'lucide-react'
 import type { AppSettings, UserProfile } from '../types'
 
 interface SettingsModalProps {
@@ -72,7 +72,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-fade-in">
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/75 backdrop-blur-sm animate-fade-in font-sans">
       <div 
         className="w-full max-w-sm rounded-2xl border p-5 shadow-2xl transition-all"
         style={{
@@ -83,13 +83,13 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
       >
         <div className="flex items-center justify-between pb-3 border-b mb-4" style={{ borderColor: 'var(--border-color)' }}>
           <div className="flex items-center gap-2">
-            <Sliders size={18} style={{ color: 'var(--accent-blue)' }} />
+            <Sliders size={18} style={{ color: 'var(--text-secondary)' }} />
             <h3 className="text-sm font-bold">Tracker Settings</h3>
           </div>
           <button
             onClick={onClose}
-            className="w-7 h-7 rounded-lg flex items-center justify-center transition-colors hover:bg-slate-500/10"
-            style={{ color: 'var(--text-muted)' }}
+            className="w-7 h-7 rounded-lg flex items-center justify-center transition-colors hover:bg-white/10"
+            style={{ color: 'var(--text-secondary)' }}
           >
             <X size={16} />
           </button>
@@ -97,9 +97,9 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
 
         {/* Error message */}
         {error && (
-          <div className="mb-3 p-2 rounded-lg text-xs bg-red-500/15 text-red-500 border border-red-500/25 font-medium flex items-center justify-between">
+          <div className="mb-3 p-2 rounded-lg text-xs bg-red-500/15 text-red-400 border border-red-500/25 font-medium flex items-center justify-between">
             <span>{error}</span>
-            <button onClick={() => setError(null)} className="ml-2 font-bold hover:text-red-600">✕</button>
+            <button onClick={() => setError(null)} className="ml-2 font-bold hover:text-red-300">✕</button>
           </div>
         )}
 
@@ -109,13 +109,11 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
             <div className="p-3 rounded-xl border" style={{ backgroundColor: 'var(--bg-surface-elevated)', borderColor: 'var(--border-color)' }}>
               <div className="flex items-center justify-between mb-1">
                 <span className="font-semibold">{user.first_name} {user.last_name || ''}</span>
-                <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${
-                  isAdmin ? 'bg-purple-500/10 text-purple-500 border border-purple-500/20' : 'bg-blue-500/10 text-blue-500'
-                }`}>
+                <span className="px-1.5 py-0.5 rounded text-[10px] font-bold border" style={{ borderColor: 'var(--border-color)', color: 'var(--text-secondary)' }}>
                   {user.role}
                 </span>
               </div>
-              <span className="text-[11px] block truncate" style={{ color: 'var(--text-muted)' }}>
+              <span className="text-[11px] block truncate" style={{ color: 'var(--text-secondary)' }}>
                 {user.email}
               </span>
             </div>
@@ -131,16 +129,16 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                     Admin
                   </span>
                 ) : (
-                  <span className="px-1.5 py-0.5 rounded text-[9px] font-medium bg-slate-500/15 text-slate-400 border border-slate-500/20">
+                  <span className="px-1.5 py-0.5 rounded text-[9px] font-medium border" style={{ borderColor: 'var(--border-color)', color: 'var(--text-secondary)' }}>
                     Managed by Admin
                   </span>
                 )}
               </div>
-              <span className="font-bold text-blue-500">
+              <span className="font-bold" style={{ color: 'var(--text-primary)' }}>
                 {idleThreshold >= 60 ? `${idleThreshold / 60}m` : `${idleThreshold}s`}
               </span>
             </div>
-            <p className="text-[11px] mb-2" style={{ color: 'var(--text-muted)' }}>
+            <p className="text-[11px] mb-2" style={{ color: 'var(--text-secondary)' }}>
               {isAdmin 
                 ? 'Configure inactivity threshold applied to tracking sessions.' 
                 : 'Marks session as idle when no keyboard or mouse activity is detected.'}
@@ -156,39 +154,34 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                   }}
                   title={!isAdmin ? 'Inactivity threshold is managed exclusively by Administrators' : undefined}
                   className={`py-1.5 rounded-lg border font-medium text-xs transition-all ${
-                    idleThreshold === sec 
-                      ? 'border-blue-500 text-blue-500 font-bold' 
-                      : ''
-                  } ${
                     !isAdmin 
                       ? 'opacity-50 cursor-not-allowed' 
-                      : 'hover:border-blue-400 cursor-pointer active:scale-95'
+                      : 'cursor-pointer active:scale-95'
                   }`}
                   style={{
                     backgroundColor: idleThreshold === sec 
-                      ? 'rgba(59, 130, 246, 0.12)' 
+                      ? 'var(--bg-surface)' 
                       : 'var(--bg-surface-elevated)',
                     borderColor: idleThreshold === sec 
-                      ? 'var(--accent-blue)' 
-                      : 'var(--border-color)'
+                      ? 'var(--text-primary)' 
+                      : 'var(--border-color)',
+                    color: idleThreshold === sec
+                      ? 'var(--text-primary)'
+                      : 'var(--text-secondary)',
+                    fontWeight: idleThreshold === sec ? 'bold' : 'normal'
                   }}
                 >
                   {sec >= 60 ? `${sec / 60}m` : `${sec}s`}
                 </button>
               ))}
             </div>
-            {!isAdmin && (
-              <p className="text-[10px] mt-1.5 text-slate-400 italic">
-                Default threshold is 1 minute (60s). Only Admin can adjust this setting.
-              </p>
-            )}
           </div>
 
           {/* Minimize to Tray */}
           <div className="flex items-center justify-between py-1">
             <div>
               <span className="font-semibold block">Minimize to Tray on Close</span>
-              <span className="text-[11px]" style={{ color: 'var(--text-muted)' }}>
+              <span className="text-[11px]" style={{ color: 'var(--text-secondary)' }}>
                 Keeps active session running in the background
               </span>
             </div>
@@ -196,7 +189,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
               type="checkbox"
               checked={minimizeToTray}
               onChange={(e) => setMinimizeToTray(e.target.checked)}
-              className="w-4 h-4 rounded text-blue-600 focus:ring-0 cursor-pointer"
+              className="w-4 h-4 rounded cursor-pointer accent-white"
             />
           </div>
 
@@ -205,8 +198,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
             <button
               onClick={handleManualSync}
               disabled={syncing}
-              className="flex-1 py-2 px-3 rounded-lg border font-medium flex items-center justify-center gap-1.5 transition-colors hover:bg-slate-500/10"
-              style={{ borderColor: 'var(--border-color)', color: 'var(--text-primary)' }}
+              className="flex-1 py-2 px-3 rounded-lg border font-medium flex items-center justify-center gap-1.5 transition-colors hover:bg-white/5"
+              style={{ borderColor: 'var(--border-color)', color: 'var(--text-secondary)' }}
             >
               <RefreshCw size={13} className={syncing ? 'animate-spin' : ''} />
               <span>{syncing ? 'Syncing...' : 'Sync Now'}</span>
@@ -214,8 +207,11 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
 
             <button
               onClick={handleSave}
-              className="flex-1 py-2 px-3 rounded-lg font-bold text-white flex items-center justify-center gap-1.5 transition-all shadow-sm"
-              style={{ backgroundColor: 'var(--accent-blue)' }}
+              className="flex-1 py-2 px-3 rounded-lg font-bold flex items-center justify-center gap-1.5 transition-all shadow-sm"
+              style={{
+                backgroundColor: 'var(--btn-primary-bg)',
+                color: 'var(--btn-primary-text)'
+              }}
             >
               {saved ? <Check size={14} /> : null}
               <span>{saved ? 'Saved' : 'Save Changes'}</span>
@@ -226,7 +222,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
           <div className="pt-2">
             <button
               onClick={onLogout}
-              className="w-full py-2 px-3 rounded-lg font-medium text-red-500 hover:bg-red-500/10 flex items-center justify-center gap-1.5 transition-colors"
+              className="w-full py-2 px-3 rounded-lg font-semibold text-red-400 hover:bg-red-500/10 flex items-center justify-center gap-1.5 transition-colors"
             >
               <LogOut size={14} />
               <span>Sign Out of Tracker</span>
@@ -237,4 +233,3 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     </div>
   )
 }
-

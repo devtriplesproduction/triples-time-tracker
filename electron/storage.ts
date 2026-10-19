@@ -52,15 +52,71 @@ class TrackerStorage {
     this.data = this.loadData()
   }
 
-  private normalizeSession(session: TrackingSession | null): TrackingSession | null {
-    if (!session) return null
-    if (session.status !== 'completed' && session.status !== 'Completed') {
-      const hasOpenBreak = session.breaks && session.breaks.some((b: any) => b.end_time === null)
-      session.status = hasOpenBreak ? 'on_break' : 'working'
-      if (session.suspended_seconds === undefined) session.suspended_seconds = 0
-      if (session.active_seconds_buffer === undefined) session.active_seconds_buffer = 0
+  public validateActiveSession(session: TrackingSession | null, expectedEmployeeId?: string): TrackingSession | null {
+    if (!session || !session.id) return null
+
+    // 1. Employee ownership check
+    if (expectedEmployeeId && session.employee_id !== expectedEmployeeId) {
+      console.warn(`[Storage] Session ${session.id} employee mismatch (${session.employee_id} !== ${expectedEmployeeId}). Discarding.`)
+      return null
     }
+
+    // 2. Non-terminated check: if already clocked out, it's not active
+    if (session.clock_out !== null && session.clock_out !== undefined) {
+      return null
+    }
+
+    // 3. Completed status check
+    if (session.status === 'completed' || session.status === 'Completed') {
+      return null
+    }
+
+    // 4. Timestamp validity check
+    const clockInMs = new Date(session.clock_in).getTime()
+    if (isNaN(clockInMs)) {
+      console.warn(`[Storage] Session ${session.id} has invalid clock_in timestamp (${session.clock_in}). Discarding.`)
+      return null
+    }
+
+    // 5. Staleness check: sessions older than 24h cannot be active
+    if (Date.now() - clockInMs > 24 * 60 * 60 * 1000) {
+      console.log(`[Storage] Session ${session.id} is stale (>24 hours elapsed since clock_in). Marking completed.`)
+      session.status = 'completed'
+      session.clock_out = new Date(clockInMs + 24 * 60 * 60 * 1000).toISOString()
+      return null
+    }
+
+    // 6. Break state consistency check
+    if (!Array.isArray(session.breaks)) {
+      session.breaks = []
+    }
+    // Filter breaks that belong to this session
+    session.breaks = session.breaks.filter(b => !b.session_id || b.session_id === session.id)
+
+    // Check open breaks
+    const openBreaks = session.breaks.filter(b => b.end_time === null)
+    if (openBreaks.length > 1) {
+      // Close older duplicate open breaks
+      for (let i = 0; i < openBreaks.length - 1; i++) {
+        openBreaks[i].end_time = openBreaks[i].start_time
+      }
+    }
+
+    const hasOpenBreak = session.breaks.some(b => b.end_time === null)
+    if (hasOpenBreak) {
+      session.status = 'on_break'
+    } else {
+      session.status = 'working'
+    }
+
+    if (session.suspended_seconds === undefined) session.suspended_seconds = 0
+    if (session.active_seconds_buffer === undefined) session.active_seconds_buffer = 0
+
     return session
+  }
+
+  private normalizeSession(session: TrackingSession | null): TrackingSession | null {
+    return this.validateActiveSession(session)
   }
 
   private loadData(): StorageData {
@@ -139,11 +195,23 @@ class TrackerStorage {
           }
         }
 
-        // Normalize sessions inside employeeData
+        // Normalize and validate sessions inside employeeData
         for (const empId of Object.keys(employeeData)) {
           const store = employeeData[empId]
           if (store.currentSession) {
-            store.currentSession = this.normalizeSession(store.currentSession)
+            const valid = this.validateActiveSession(store.currentSession, empId)
+            if (!valid) {
+              const prev = store.currentSession
+              const idx = store.todaySessions.findIndex(x => x.id === prev.id)
+              if (idx !== -1) {
+                store.todaySessions[idx] = prev
+              } else {
+                store.todaySessions.push(prev)
+              }
+              store.currentSession = null
+            } else {
+              store.currentSession = valid
+            }
           }
         }
 
@@ -180,13 +248,45 @@ class TrackerStorage {
     }
   }
 
+  private saveDebounceTimer: NodeJS.Timeout | null = null
+  private lastSaveTime: number = 0
+
+  /**
+   * Immediately flushes any pending debounced writes to disk.
+   */
+  public flush(): void {
+    if (this.saveDebounceTimer) {
+      clearTimeout(this.saveDebounceTimer)
+      this.saveDebounceTimer = null
+    }
+    this.save()
+  }
+
+  /**
+   * Schedules a debounced save to disk, ensuring routine per-second tick updates
+   * do not cause continuous synchronous disk writes on the main thread.
+   */
+  public saveDebounced(delayMs: number = 10000): void {
+    const now = Date.now()
+    if (now - this.lastSaveTime >= delayMs) {
+      this.flush()
+      return
+    }
+    if (this.saveDebounceTimer) return
+    this.saveDebounceTimer = setTimeout(() => {
+      this.saveDebounceTimer = null
+      this.save()
+    }, delayMs)
+  }
+
   private save(): void {
     try {
+      this.lastSaveTime = Date.now()
       const dir = path.dirname(this.filePath)
       if (!fs.existsSync(dir)) {
         fs.mkdirSync(dir, { recursive: true })
       }
-      fs.writeFileSync(this.filePath, JSON.stringify(this.data, null, 2), 'utf-8')
+      fs.writeFileSync(this.filePath, JSON.stringify(this.data), 'utf-8')
     } catch (e) {
       console.error('[Storage] Error saving store:', e)
     }
@@ -288,51 +388,69 @@ class TrackerStorage {
     const store = this.data.employeeData[empId]
     if (!store || !store.currentSession) return null
 
-    // Enforce strict ownership verification
-    if (store.currentSession.employee_id !== empId) {
-      console.warn(`[Storage] Cross-account session leakage blocked! Expected: ${empId}, Got: ${store.currentSession.employee_id}. Discarding invalid reference.`)
-      store.currentSession = null
-      this.save()
+    // Enforce strict ownership and active validity verification
+    const validated = this.validateActiveSession(store.currentSession, empId)
+    if (!validated) {
+      if (store.currentSession) {
+        const s = store.currentSession
+        const idx = store.todaySessions.findIndex(x => x.id === s.id)
+        if (idx !== -1) {
+          store.todaySessions[idx] = s
+        } else {
+          store.todaySessions.push(s)
+        }
+        store.currentSession = null
+        this.save()
+      }
       return null
     }
 
-    return store.currentSession
+    store.currentSession = validated
+    return validated
   }
 
   /**
    * Persists the active session for an explicit employee.
+   * If session is terminated or completed, it is recorded in todaySessions but cleared from currentSession.
    */
   public setCurrentSession(session: TrackingSession | null, employeeId?: string): void {
-    if (session) {
-      const empId = session.employee_id || employeeId || this.data.currentUser?.id || this.data.activeEmployeeId
-      if (!empId) {
+    const empId = session?.employee_id || employeeId || this.data.currentUser?.id || this.data.activeEmployeeId
+    if (!empId) {
+      if (session) {
         console.error('[Storage] Cannot set current session: missing employee ID.')
-        return
       }
-      session.employee_id = empId
-      const store = this.getEmployeeData(empId)
-      store.currentSession = session
+      return
+    }
 
+    const store = this.getEmployeeData(empId)
+
+    if (session) {
+      session.employee_id = empId
+      const validated = this.validateActiveSession(session, empId)
+
+      // Always update history in todaySessions
       const idx = store.todaySessions.findIndex(s => s.id === session.id)
       if (idx !== -1) {
         store.todaySessions[idx] = session
       } else {
         store.todaySessions.push(session)
       }
+
+      // Only assign currentSession if the session is genuinely active
+      store.currentSession = validated
       this.save()
     } else {
-      const empId = employeeId || this.data.currentUser?.id || this.data.activeEmployeeId
-      if (empId && this.data.employeeData[empId]) {
-        this.data.employeeData[empId].currentSession = null
-        this.save()
-      }
+      store.currentSession = null
+      this.save()
     }
   }
 
   /**
    * Updates fields on the specified employee's current session.
+   * Routine tick updates (worked/active seconds) use debounced save;
+   * State transitions or minute rollovers can pass immediate=true.
    */
-  public updateCurrentSession(updates: Partial<TrackingSession>, employeeId?: string): TrackingSession | null {
+  public updateCurrentSession(updates: Partial<TrackingSession>, employeeId?: string, immediate: boolean = false): TrackingSession | null {
     const empId = employeeId || this.data.currentUser?.id || this.data.activeEmployeeId
     if (!empId || !this.data.employeeData[empId]) return null
 
@@ -344,7 +462,12 @@ class TrackerStorage {
     if (idx !== -1) {
       store.todaySessions[idx] = store.currentSession
     }
-    this.save()
+
+    if (immediate) {
+      this.flush()
+    } else {
+      this.saveDebounced(10000)
+    }
     return store.currentSession
   }
 
@@ -430,15 +553,29 @@ class TrackerStorage {
 
   /**
    * Returns today's sessions strictly belonging to the specified employee.
+   * Supports targetDate parameter and includes sessions overlapping the date boundary.
    */
-  public getTodaySessions(employeeId?: string): TrackingSession[] {
+  public getTodaySessions(employeeId?: string, targetDate?: string): TrackingSession[] {
     const empId = employeeId || this.data.currentUser?.id || this.data.activeEmployeeId
     if (!empId || !this.data.employeeData[empId]) return []
 
-    const today = this.getTodayBusinessDate()
-    return this.data.employeeData[empId].todaySessions.filter(
-      s => s.session_date === today && s.employee_id === empId
-    )
+    const target = targetDate || this.getTodayBusinessDate()
+    const targetStartMs = new Date(`${target}T00:00:00+05:30`).getTime()
+    const targetEndMs = targetStartMs + 24 * 60 * 60 * 1000
+
+    return this.data.employeeData[empId].todaySessions.filter(s => {
+      if (s.employee_id !== empId) return false
+      if (s.session_date === target) return true
+      const clockInMs = new Date(s.clock_in).getTime()
+      const endMs = s.clock_out ? new Date(s.clock_out).getTime() : Date.now()
+      return clockInMs < targetEndMs && endMs > targetStartMs
+    })
+  }
+
+  public getAllSessions(employeeId?: string): TrackingSession[] {
+    const empId = employeeId || this.data.currentUser?.id || this.data.activeEmployeeId
+    if (!empId || !this.data.employeeData[empId]) return []
+    return this.data.employeeData[empId].todaySessions.filter(s => s.employee_id === empId)
   }
 
   public setTodaySessions(sessions: TrackingSession[], employeeId?: string): void {
@@ -464,7 +601,7 @@ class TrackerStorage {
   }
 
   public saveStore(): void {
-    this.save()
+    this.flush()
   }
 }
 

@@ -4,6 +4,7 @@ import path from 'path'
 import fs from 'fs'
 import { storage } from './storage'
 import type { TrackingState, TrackingStatus, ActivityInterval, TrackingSession, BreakRecord, UserProfile } from '../src/types'
+import { calculateDailyWorkedSeconds, calculateDailyActiveSeconds } from '../src/utils/timeCalculator'
 
 class ActivityTracker {
   private timer: NodeJS.Timeout | null = null
@@ -16,6 +17,9 @@ class ActivityTracker {
   private isSuspended: boolean = false
   private isScreenLocked: boolean = false
   private suspendStartTime: number | null = null
+  private isDetectingApp: boolean = false
+  private tickCounter: number = 0
+  private lastEmittedIdle: boolean = false
 
   constructor() {
     this.setupPowerMonitor()
@@ -122,6 +126,18 @@ class ActivityTracker {
       return
     }
 
+    // Performance Optimization: Skip spawning PowerShell when user is idle / away
+    const settings = storage.getSettings()
+    const idleSeconds = powerMonitor.getSystemIdleTime()
+    if (idleSeconds >= settings.idleThresholdSeconds) {
+      return
+    }
+
+    // Performance Optimization: Concurrency guard preventing overlapping PowerShell processes
+    if (this.isDetectingApp) {
+      return
+    }
+
     try {
       const scriptPath = app.isPackaged
         ? path.join(process.resourcesPath, 'scripts', 'get-active-window.ps1')
@@ -131,7 +147,9 @@ class ActivityTracker {
         return
       }
 
+      this.isDetectingApp = true
       execFile('powershell', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', scriptPath], { timeout: 3500 }, (error, stdout) => {
+        this.isDetectingApp = false
         if (!error && stdout) {
           try {
             const parsed = JSON.parse(stdout.trim())
@@ -145,7 +163,7 @@ class ActivityTracker {
         }
       })
     } catch (e) {
-      // Fallback safely
+      this.isDetectingApp = false
     }
   }
 
@@ -193,11 +211,13 @@ class ActivityTracker {
     session.worked_minutes = Math.floor(currentWorkedMs / 60000)
 
     const isWorking = session.status === 'Working' || session.status === 'working'
+    let minuteRolledOver = false
     if (isWorking && !isIdle && !this.isSuspended && !this.isScreenLocked) {
       this.activeSecondsBuffer += 1
       if (this.activeSecondsBuffer >= 60) {
         session.active_minutes += 1
         this.activeSecondsBuffer = 0
+        minuteRolledOver = true
 
         const interval: ActivityInterval = {
           id: crypto.randomUUID(),
@@ -219,9 +239,16 @@ class ActivityTracker {
       active_minutes: session.active_minutes,
       suspended_seconds: session.suspended_seconds || 0,
       active_seconds_buffer: this.activeSecondsBuffer
-    }, user.id)
+    }, user.id, minuteRolledOver)
 
-    this.emitState()
+    this.tickCounter += 1
+    const idleChanged = isIdle !== this.lastEmittedIdle
+    this.lastEmittedIdle = isIdle
+
+    // Emit immediately when idle state changes, active minute completes, or periodically every 5 ticks
+    if (idleChanged || minuteRolledOver || (this.tickCounter % 5 === 0)) {
+      this.emitState()
+    }
   }
 
   public getState(employeeId?: string): TrackingState {
@@ -250,16 +277,28 @@ class ActivityTracker {
     const isIdle = idleSeconds >= settings.idleThresholdSeconds
 
     const todaySessions = storage.getTodaySessions(empId)
-    const totalTodayWorked = todaySessions.reduce((acc, s) => acc + s.worked_minutes, 0)
-    const totalTodayActive = todaySessions.reduce((acc, s) => acc + s.active_minutes, 0)
+    const allSessions = storage.getAllSessions ? storage.getAllSessions(empId) : todaySessions
+    const todayWorkedSeconds = calculateDailyWorkedSeconds(session, allSessions)
+    const todayActiveSeconds = calculateDailyActiveSeconds(session, allSessions)
+    const todayWorkedMinutes = Math.min(1440, Math.floor(todayWorkedSeconds / 60))
+    const totalTodayActive = Math.min(1440, Math.floor(todayActiveSeconds / 60))
 
-    const status: TrackingStatus = session ? session.status : 'Not Clocked In'
+    let status: TrackingStatus = 'Not Clocked In'
+    if (session && session.employee_id === empId && !session.clock_out && session.status !== 'completed' && session.status !== 'Completed') {
+      const hasOpenBreak = session.breaks && session.breaks.some(b => b.end_time === null)
+      status = hasOpenBreak ? 'on_break' : 'working'
+    } else if (todaySessions.length > 0 && todaySessions.some(s => s.status === 'completed' || s.status === 'Completed' || s.clock_out !== null)) {
+      status = 'Completed'
+    }
 
     return {
       status,
       currentSession: session,
-      todayWorkedMinutes: totalTodayWorked,
+      todayWorkedMinutes,
       todayActiveMinutes: totalTodayActive,
+      todayWorkedSeconds,
+      todayActiveSeconds,
+      todaySessions,
       activeAppName: this.currentApp,
       isIdle,
       idleSeconds,
@@ -278,14 +317,15 @@ class ActivityTracker {
   }
 
   // Session Control Actions strictly tied to employeeId
-  public clockIn(employeeId: string): TrackingSession {
+  public clockIn(employeeId: string, shouldEmit: boolean = true): TrackingSession {
     const user = storage.getCurrentUser()
     if (!user || user.id !== employeeId) {
       throw new Error(`Clock in failed: requested employee ${employeeId} does not match active authenticated user ${user?.id || 'none'}`)
     }
 
     const existing = storage.getCurrentSession(employeeId)
-    if (existing && existing.status !== 'Completed' && existing.status !== 'completed') {
+    if (existing && existing.status !== 'Completed' && existing.status !== 'completed' && !existing.clock_out) {
+      if (shouldEmit) this.emitState()
       return existing
     }
 
@@ -306,7 +346,9 @@ class ActivityTracker {
 
     storage.setCurrentSession(newSession, employeeId)
     this.activeSecondsBuffer = 0
-    this.emitState()
+    if (shouldEmit) {
+      this.emitState()
+    }
     return newSession
   }
 
