@@ -3,6 +3,7 @@ import { execFile } from 'child_process'
 import path from 'path'
 import fs from 'fs'
 import { storage } from './storage'
+import { screenshotService } from './screenshot-service'
 import type { TrackingState, TrackingStatus, ActivityInterval, TrackingSession, BreakRecord, UserProfile } from '../src/types'
 import { calculateDailyWorkedSeconds, calculateDailyActiveSeconds } from '../src/utils/timeCalculator'
 
@@ -20,9 +21,18 @@ class ActivityTracker {
   private isDetectingApp: boolean = false
   private tickCounter: number = 0
   private lastEmittedIdle: boolean = false
+  private screenshotSecondsBuffer: number = 0
 
   constructor() {
     this.setupPowerMonitor()
+  }
+
+  public getCurrentApp(): string {
+    return this.currentApp
+  }
+
+  public getCurrentTitle(): string {
+    return this.currentTitle
   }
 
   public setWindow(win: BrowserWindow | null) {
@@ -104,11 +114,13 @@ class ActivityTracker {
     } else {
       this.activeSecondsBuffer = 0
     }
+    this.screenshotSecondsBuffer = 0
     this.emitState()
   }
 
   public onUserLogout() {
     this.activeSecondsBuffer = 0
+    this.screenshotSecondsBuffer = 0
     this.currentApp = 'Desktop Work'
     this.currentTitle = ''
     this.suspendStartTime = null
@@ -230,6 +242,24 @@ class ActivityTracker {
           window_title: this.currentTitle || ''
         }
         storage.addActivityInterval(interval)
+      }
+
+      // Automatic 7-minute periodic screenshot capture (420 active working seconds)
+      this.screenshotSecondsBuffer += 1
+      if (this.screenshotSecondsBuffer >= 420) {
+        this.screenshotSecondsBuffer = 0
+        screenshotService.captureAndSaveScreenshot(
+          session,
+          user,
+          this.currentApp,
+          this.currentTitle
+        ).then(record => {
+          if (record && this.window && !this.window.isDestroyed()) {
+            this.window.webContents.send('screenshot:captured', record)
+          }
+        }).catch(err => {
+          console.error('[ActivityTracker] Error capturing periodic screenshot:', err)
+        })
       }
     }
 
@@ -458,6 +488,7 @@ class ActivityTracker {
     storage.saveStore()
 
     this.activeSecondsBuffer = 0
+    this.screenshotSecondsBuffer = 0
     this.emitState()
     return session
   }

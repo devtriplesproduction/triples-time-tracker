@@ -4,6 +4,7 @@ import fs from 'fs'
 import { storage } from './storage'
 import { activityTracker } from './activity-tracker'
 import { supabaseService } from './supabase-service'
+import { screenshotService } from './screenshot-service'
 import type { AppSettings } from '../src/types'
 
 let mainWindow: BrowserWindow | null = null
@@ -399,4 +400,43 @@ ipcMain.handle('tracker:submit-bug-report', async (_event, report: { title: stri
   console.log(`[BugReport] Submitted by ${user?.email || 'anonymous'}:`, report)
   return { success: true }
 })
+
+// Screenshots inspection & capture IPC handlers
+ipcMain.handle('screenshots:get-all-employees', async () => {
+  return await supabaseService.getAllEmployeesForAdmin()
+})
+
+ipcMain.handle('screenshots:get', async (_event, params: { employeeId: string; sessionDate?: string; month?: string }) => {
+  return await supabaseService.getScreenshots(params)
+})
+
+ipcMain.handle('screenshots:delete', async (_event, id: string, storagePath?: string) => {
+  return await supabaseService.deleteScreenshot(id, storagePath)
+})
+
+ipcMain.handle('screenshots:capture-now', async (_event, employeeId?: string) => {
+  const user = storage.getCurrentUser()
+  if (!user || !user.id) {
+    return { success: false, error: 'User authentication required' }
+  }
+  const empId = employeeId || user.id
+  const session = storage.getCurrentSession(empId)
+  if (!session) {
+    return { success: false, error: 'No active session found to capture screenshot for.' }
+  }
+  const record = await screenshotService.captureAndSaveScreenshot(
+    session,
+    user,
+    activityTracker.getCurrentApp(),
+    activityTracker.getCurrentTitle()
+  )
+  if (record) {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('screenshot:captured', record)
+    }
+    return { success: true, screenshot: record }
+  }
+  return { success: false, error: 'Failed to capture screen' }
+})
+
 

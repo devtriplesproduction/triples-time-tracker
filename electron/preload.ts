@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer } from 'electron'
-import type { ElectronAPI, TrackingState, AppSettings } from '../src/types'
+import type { ElectronAPI, TrackingState, AppSettings, ScreenshotRecord } from '../src/types'
 
 const api: ElectronAPI = {
   minimizeWindow: () => ipcRenderer.send('window:minimize'),
@@ -25,6 +25,20 @@ const api: ElectronAPI = {
   getTodaySessions: () => ipcRenderer.invoke('tracker:get-today-sessions'),
   openExternal: (url: string) => ipcRenderer.invoke('window:open-external', url),
   submitBugReport: (report: { title: string; description: string }) => ipcRenderer.invoke('tracker:submit-bug-report', report),
+
+  getAllEmployeesForAdmin: () => ipcRenderer.invoke('screenshots:get-all-employees'),
+  getScreenshots: (params: { employeeId: string; sessionDate?: string; month?: string }) =>
+    ipcRenderer.invoke('screenshots:get', params),
+  deleteScreenshot: (id: string, storagePath?: string) =>
+    ipcRenderer.invoke('screenshots:delete', id, storagePath),
+  captureScreenshotNow: (employeeId?: string) => ipcRenderer.invoke('screenshots:capture-now', employeeId),
+  onScreenshotCaptured: (callback: (newScreenshot: ScreenshotRecord) => void) => {
+    const handler = (_event: any, screenshot: ScreenshotRecord) => callback(screenshot)
+    ipcRenderer.on('screenshot:captured', handler)
+    return () => {
+      ipcRenderer.removeListener('screenshot:captured', handler)
+    }
+  },
 
   onStateUpdate: (callback: (state: TrackingState) => void) => {
     const handler = (_event: any, state: TrackingState) => callback(state)

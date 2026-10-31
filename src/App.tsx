@@ -11,6 +11,7 @@ import { WorkReportModal } from './components/WorkReportModal'
 import { ApplyLeaveModal } from './components/ApplyLeaveModal'
 import { ClockInScreen } from './components/ClockInScreen'
 import { HelpModal } from './components/HelpModal'
+import { AdminScreenshotsModal } from './components/AdminScreenshotsModal'
 import type {
   TrackingState,
   TrackingStatus,
@@ -48,6 +49,7 @@ export const App: React.FC = () => {
   const [isWorkReportOpen, setIsWorkReportOpen] = useState<boolean>(false)
   const [isApplyLeaveOpen, setIsApplyLeaveOpen] = useState<boolean>(false)
   const [isHelpOpen, setIsHelpOpen] = useState<boolean>(false)
+  const [isScreenshotsOpen, setIsScreenshotsOpen] = useState<boolean>(false)
 
   const [isInitializing, setIsInitializing] = useState<boolean>(true)
   const [authError, setAuthError] = useState<string | null>(null)
@@ -507,6 +509,7 @@ export const App: React.FC = () => {
         user={user}
         onOpenBugReport={() => setIsBugReportOpen(true)}
         onOpenSettings={() => setIsSettingsOpen(true)}
+        onOpenScreenshots={() => setIsScreenshotsOpen(true)}
         onSignOut={handleLogout}
         onOpenLogin={() => setIsLoginOpen(true)}
       />
@@ -702,6 +705,12 @@ export const App: React.FC = () => {
       <HelpModal
         isOpen={isHelpOpen}
         onClose={() => setIsHelpOpen(false)}
+      />
+
+      <AdminScreenshotsModal
+        isOpen={isScreenshotsOpen}
+        onClose={() => setIsScreenshotsOpen(false)}
+        currentUser={user}
       />
     </div>
   )

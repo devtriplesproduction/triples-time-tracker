@@ -1,8 +1,9 @@
 import { createClient, SupabaseClient } from '@supabase/supabase-js'
 import WebSocket from 'ws'
+import fs from 'fs'
 import { storage } from './storage'
 import { activityTracker } from './activity-tracker'
-import type { UserProfile, TrackingSession, BreakRecord, ActivityInterval, PendingSyncItem } from '../src/types'
+import type { UserProfile, TrackingSession, BreakRecord, ActivityInterval, PendingSyncItem, ScreenshotRecord } from '../src/types'
 
 // Provide WebSocket implementation for Node.js / Electron main process
 if (typeof (globalThis as any).WebSocket === 'undefined') {
@@ -681,12 +682,211 @@ class SupabaseService {
           })
           if (!error) storage.removePending(item.id, empId)
           else item.retries += 1
+        } else if (item.type === 'screenshot') {
+          const { record, offlineFilePath } = item.data as { record: ScreenshotRecord; offlineFilePath?: string }
+          if (record.employee_id !== empId) continue
+
+          let buffer: Buffer | null = null
+          if (offlineFilePath && fs.existsSync(offlineFilePath)) {
+            try {
+              buffer = fs.readFileSync(offlineFilePath)
+            } catch (_) {}
+          }
+
+          if (buffer) {
+            const uploadRes = await this.uploadScreenshot(record, buffer)
+            if (uploadRes.success) {
+              storage.removePending(item.id, empId)
+              try {
+                if (offlineFilePath && fs.existsSync(offlineFilePath)) {
+                  fs.unlinkSync(offlineFilePath)
+                }
+              } catch (_) {}
+            } else {
+              item.retries += 1
+            }
+          } else {
+            const { error } = await this.client.from('session_screenshots').upsert({
+              id: record.id,
+              session_id: record.session_id,
+              employee_id: empId,
+              session_date: record.session_date,
+              captured_at: record.captured_at,
+              storage_path: record.storage_path,
+              image_url: record.image_url,
+              image_data: record.image_data,
+              file_size_bytes: record.file_size_bytes,
+              app_name: record.app_name,
+              window_title: record.window_title,
+              created_at: record.created_at
+            })
+            if (!error) storage.removePending(item.id, empId)
+            else item.retries += 1
+          }
         }
       }
     } catch (e) {
       console.warn('[SupabaseService] Error flushing queue:', e)
     } finally {
       this.isSyncingQueue = false
+    }
+  }
+
+  /**
+   * Uploads screenshot buffer to Supabase Storage and records metadata in public.session_screenshots.
+   * If Storage bucket is unavailable or fails, gracefully falls back to base64 image_data.
+   */
+  public async uploadScreenshot(
+    record: ScreenshotRecord,
+    buffer: Buffer
+  ): Promise<{ success: boolean; record?: ScreenshotRecord; error?: string }> {
+    try {
+      // 1. Upload to Supabase Storage bucket 'screenshots'
+      const { error: storageError } = await this.client.storage
+        .from('screenshots')
+        .upload(record.storage_path, buffer, {
+          contentType: 'image/jpeg',
+          upsert: true
+        })
+
+      if (storageError) {
+        console.warn('[SupabaseService] Storage bucket upload failed, using fallback base64 image_data:', storageError.message)
+        record.image_data = `data:image/jpeg;base64,${buffer.toString('base64')}`
+      } else {
+        const { data: urlData } = this.client.storage
+          .from('screenshots')
+          .getPublicUrl(record.storage_path)
+        record.image_url = urlData.publicUrl
+      }
+
+      // 2. Insert or upsert record into session_screenshots table
+      const { data, error: dbError } = await this.client
+        .from('session_screenshots')
+        .upsert({
+          id: record.id,
+          session_id: record.session_id,
+          employee_id: record.employee_id,
+          session_date: record.session_date,
+          captured_at: record.captured_at,
+          storage_path: record.storage_path,
+          image_url: record.image_url,
+          image_data: record.image_data || null,
+          file_size_bytes: record.file_size_bytes,
+          app_name: record.app_name,
+          window_title: record.window_title,
+          created_at: record.created_at
+        })
+        .select()
+        .single()
+
+      if (dbError) {
+        console.error('[SupabaseService] Error saving screenshot record to database:', dbError.message)
+        return { success: false, error: dbError.message }
+      }
+
+      return { success: true, record: (data as ScreenshotRecord) || record }
+    } catch (err: any) {
+      console.error('[SupabaseService] Unexpected error uploading screenshot:', err)
+      return { success: false, error: err.message || 'Failed to upload screenshot' }
+    }
+  }
+
+  /**
+   * Fetches all registered employees for Admin and HR inspection.
+   */
+  public async getAllEmployeesForAdmin(): Promise<{ success: boolean; employees: UserProfile[]; error?: string }> {
+    try {
+      const { data, error } = await this.client
+        .from('profiles')
+        .select('id, email, first_name, last_name, employee_id, department, designation, role, avatar_url, is_active')
+        .order('first_name', { ascending: true })
+
+      if (error) {
+        return { success: false, employees: [], error: error.message }
+      }
+
+      const employees: UserProfile[] = (data || []).map((p: any) => ({
+        id: p.id,
+        email: p.email || '',
+        first_name: p.first_name || '',
+        last_name: p.last_name || null,
+        employee_id: p.employee_id || null,
+        department: p.department || null,
+        designation: p.designation || null,
+        role: p.role || 'Employee',
+        avatar_url: p.avatar_url || null,
+        is_active: p.is_active ?? true
+      }))
+
+      return { success: true, employees }
+    } catch (err: any) {
+      return { success: false, employees: [], error: err.message || 'Failed to fetch employees' }
+    }
+  }
+
+  /**
+   * Queries screenshots for a specific employee across days or full months.
+   */
+  public async getScreenshots(params: {
+    employeeId: string
+    sessionDate?: string
+    month?: string
+  }): Promise<{ success: boolean; screenshots?: ScreenshotRecord[]; error?: string }> {
+    try {
+      let query = this.client
+        .from('session_screenshots')
+        .select('*')
+        .eq('employee_id', params.employeeId)
+        .order('captured_at', { ascending: true })
+
+      if (params.sessionDate) {
+        query = query.eq('session_date', params.sessionDate)
+      } else if (params.month) {
+        query = query.gte('session_date', `${params.month}-01`).lte('session_date', `${params.month}-31`)
+      }
+
+      const { data, error } = await query
+
+      if (error) {
+        return { success: false, error: error.message }
+      }
+
+      return { success: true, screenshots: (data as ScreenshotRecord[]) || [] }
+    } catch (err: any) {
+      return { success: false, error: err.message || 'Failed to query screenshots' }
+    }
+  }
+
+  /**
+   * Deletes a screenshot record from both database and Supabase storage.
+   */
+  public async deleteScreenshot(id: string, storagePath?: string): Promise<{ success: boolean; error?: string }> {
+    try {
+      if (storagePath) {
+        await this.client.storage.from('screenshots').remove([storagePath])
+      } else {
+        const { data } = await this.client
+          .from('session_screenshots')
+          .select('storage_path')
+          .eq('id', id)
+          .maybeSingle()
+        if (data?.storage_path) {
+          await this.client.storage.from('screenshots').remove([data.storage_path])
+        }
+      }
+
+      const { error } = await this.client
+        .from('session_screenshots')
+        .delete()
+        .eq('id', id)
+
+      if (error) {
+        return { success: false, error: error.message }
+      }
+
+      return { success: true }
+    } catch (err: any) {
+      return { success: false, error: err.message || 'Failed to delete screenshot' }
     }
   }
 

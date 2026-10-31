@@ -47,9 +47,24 @@ export interface UserProfile {
   is_active?: boolean
 }
 
+export interface ScreenshotRecord {
+  id: string
+  session_id: string
+  employee_id: string
+  session_date: string // YYYY-MM-DD
+  captured_at: string
+  storage_path: string
+  image_url: string | null
+  image_data?: string | null
+  file_size_bytes: number
+  app_name?: string
+  window_title?: string
+  created_at: string
+}
+
 export interface PendingSyncItem {
   id: string
-  type: 'session' | 'break' | 'activity'
+  type: 'session' | 'break' | 'activity' | 'screenshot'
   employee_id?: string
   data: any
   createdAt: string
@@ -102,6 +117,13 @@ export interface ElectronAPI {
   openExternal?: (url: string) => Promise<void>
   submitBugReport?: (report: { title: string; description: string }) => Promise<{ success: boolean; error?: string }>
   onStateUpdate: (callback: (state: TrackingState) => void) => () => void
+
+  // Screenshot and Admin methods
+  getAllEmployeesForAdmin?: () => Promise<{ success: boolean; employees: UserProfile[]; error?: string }>
+  getScreenshots?: (params: { employeeId: string; sessionDate?: string; month?: string }) => Promise<{ success: boolean; screenshots?: ScreenshotRecord[]; error?: string }>
+  deleteScreenshot?: (id: string, storagePath?: string) => Promise<{ success: boolean; error?: string }>
+  captureScreenshotNow?: (employeeId?: string) => Promise<{ success: boolean; screenshot?: ScreenshotRecord; error?: string }>
+  onScreenshotCaptured?: (callback: (newScreenshot: ScreenshotRecord) => void) => () => void
 }
 
 declare global {

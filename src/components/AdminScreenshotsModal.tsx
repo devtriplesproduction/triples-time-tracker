@@ -63,7 +63,7 @@ export const AdminScreenshotsModal: React.FC<AdminScreenshotsModalProps> = ({
       try {
         if (window.electronAPI?.getAllEmployeesForAdmin) {
           const res = await window.electronAPI.getAllEmployeesForAdmin()
-          if (res.success && res.employees.length > 0) {
+          if (res.success && res.employees && res.employees.length > 0) {
             setEmployees(res.employees)
             if (!selectedEmployeeId) {
               const defaultEmp = currentUser?.id || res.employees[0].id
@@ -132,7 +132,7 @@ export const AdminScreenshotsModal: React.FC<AdminScreenshotsModalProps> = ({
   useEffect(() => {
     if (!isOpen || !window.electronAPI?.onScreenshotCaptured) return
 
-    const unsubscribe = window.electronAPI.onScreenshotCaptured((newScreenshot) => {
+    const unsubscribe = window.electronAPI.onScreenshotCaptured((newScreenshot: ScreenshotRecord) => {
       if (newScreenshot.employee_id === selectedEmployeeId) {
         setScreenshots((prev) => {
           if (prev.some((s) => s.id === newScreenshot.id)) return prev

@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react'
-import { Bug, LogOut, Settings as SettingsIcon } from 'lucide-react'
+import { Bug, LogOut, Settings as SettingsIcon, Camera } from 'lucide-react'
 import type { UserProfile } from '../types'
 import logoImg from '../assets/logo.png'
 
@@ -9,6 +9,7 @@ interface AppHeaderProps {
   onOpenSettings: () => void
   onSignOut: () => void
   onOpenLogin: () => void
+  onOpenScreenshots?: () => void
 }
 
 export const AppHeader: React.FC<AppHeaderProps> = React.memo(({
@@ -16,7 +17,8 @@ export const AppHeader: React.FC<AppHeaderProps> = React.memo(({
   onOpenBugReport,
   onOpenSettings,
   onSignOut,
-  onOpenLogin
+  onOpenLogin,
+  onOpenScreenshots
 }) => {
   const [isAvatarMenuOpen, setIsAvatarMenuOpen] = useState(false)
   const avatarRef = useRef<HTMLDivElement>(null)
@@ -120,6 +122,20 @@ export const AppHeader: React.FC<AppHeaderProps> = React.memo(({
                 <Bug size={14} />
                 <span>Send bug report</span>
               </button>
+
+              {/* Screenshots Inspection (Admin / HR) */}
+              {user && (user.role === 'Admin' || (user.role as any) === 'Super Admin' || user.role === 'HR') && onOpenScreenshots && (
+                <button
+                  onClick={() => {
+                    setIsAvatarMenuOpen(false)
+                    onOpenScreenshots()
+                  }}
+                  className="w-full px-3.5 py-2 text-left text-xs hover:bg-white/5 flex items-center gap-2 transition-colors text-sky-400 font-medium"
+                >
+                  <Camera size={14} />
+                  <span>Screenshots Inspection</span>
+                </button>
+              )}
 
               {/* Tracker Settings */}
               <button
