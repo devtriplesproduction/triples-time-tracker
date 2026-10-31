@@ -1,0 +1,10 @@
+const fs = require('fs')
+const path = require('path')
+
+const file = path.resolve(__dirname, '../../TripleS-ERP/app/api/time-tracking/session/route.ts')
+let content = fs.readFileSync(file, 'utf8')
+content = content.replace("status: 'On Break'", "status: 'on_break'")
+content = content.replace("status: 'Working'", "status: 'working'")
+content = content.replace("status: 'Completed'", "status: 'completed'")
+fs.writeFileSync(file, content, 'utf8')
+console.log('Successfully updated ERP session route.ts with on_break')
