@@ -7,7 +7,9 @@ dist-electron/
 
 # Environment variables (Crucial for security!)
 .env
+.env*
 .env.local
+.env.*
 
 # Logs
 npm-debug.log*
