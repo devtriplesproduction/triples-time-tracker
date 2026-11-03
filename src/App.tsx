@@ -12,6 +12,8 @@ import { ApplyLeaveModal } from './components/ApplyLeaveModal'
 import { ClockInScreen } from './components/ClockInScreen'
 import { HelpModal } from './components/HelpModal'
 import { AdminScreenshotsModal } from './components/AdminScreenshotsModal'
+import { WebLandingScreen } from './components/WebLandingScreen'
+import { Monitor } from 'lucide-react'
 import type {
   TrackingState,
   TrackingStatus,
@@ -57,6 +59,8 @@ export const App: React.FC = () => {
   const [syncError, setSyncError] = useState<string | null>(null)
   const [isRetryingSync, setIsRetryingSync] = useState<boolean>(false)
   const [isClockingIn, setIsClockingIn] = useState<boolean>(false)
+  const isDesktop = typeof window !== 'undefined' && Boolean(window.electronAPI)
+  const [isPreviewMode, setIsPreviewMode] = useState<boolean>(false)
 
   useEffect(() => {
     userRef.current = user
@@ -211,11 +215,13 @@ export const App: React.FC = () => {
           setTodayActiveMinutes(0)
           setCurrentSession(null)
           setTodaySessions([])
-          setIsLoginOpen(true)
+          setIsLoginOpen(false)
         }
       } catch (err: any) {
         console.error('[App] Init exception:', err)
-        setIsLoginOpen(true)
+        if (window.electronAPI) {
+          setIsLoginOpen(true)
+        }
       } finally {
         setIsInitializing(false)
       }
@@ -471,6 +477,17 @@ export const App: React.FC = () => {
     setIsLoginOpen(true)
   }
 
+  // If running in a web browser (not Electron) and not in preview mode, display the Web Landing / Download screen
+  if (!isDesktop && !isPreviewMode) {
+    return (
+      <WebLandingScreen
+        theme={theme}
+        onToggleTheme={handleToggleTheme}
+        onPreviewUI={() => setIsPreviewMode(true)}
+      />
+    )
+  }
+
   if (isInitializing) {
     return (
       <div
@@ -501,6 +518,34 @@ export const App: React.FC = () => {
       className="flex flex-col h-screen select-none overflow-hidden"
       style={{ backgroundColor: 'var(--bg-primary)' }}
     >
+      {/* Web Demo / Preview Banner (Only shown in browser preview mode) */}
+      {isPreviewMode && (
+        <div className="w-full bg-blue-600/90 text-white text-xs px-4 py-2 flex items-center justify-between z-40 sticky top-0 shadow-md">
+          <div className="flex items-center gap-2">
+            <Monitor size={14} className="shrink-0" />
+            <span>
+              <strong>Web Preview Mode:</strong> Background activity tracking and screenshot captures require the native Windows app.
+            </span>
+          </div>
+          <div className="flex items-center gap-3 shrink-0">
+            <a
+              href="https://github.com/devtriplesproduction/triples-time-tracker/releases"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="font-bold underline hover:opacity-80"
+            >
+              Download .exe
+            </a>
+            <button
+              onClick={() => setIsPreviewMode(false)}
+              className="bg-black/30 hover:bg-black/50 px-2.5 py-0.5 rounded text-white text-[11px] font-semibold transition-colors"
+            >
+              Exit Preview
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* 1. Title Bar (TripleS Time Tracker + Window Controls) */}
       <TitleBar status={status} theme={theme} onToggleTheme={handleToggleTheme} />
 

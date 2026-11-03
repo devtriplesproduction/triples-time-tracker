@@ -1,5 +1,5 @@
 import React, { useState } from 'react'
-import { Lock, Mail, ArrowRight, ShieldCheck, AlertCircle } from 'lucide-react'
+import { Lock, Mail, ArrowRight, ShieldCheck, AlertCircle, Download } from 'lucide-react'
 import type { UserProfile } from '../types'
 
 interface LoginModalProps {
@@ -9,11 +9,12 @@ interface LoginModalProps {
   initialError?: string | null
 }
 
-export const LoginModal: React.FC<LoginModalProps> = ({ isOpen, onSuccess, initialError }) => {
+export const LoginModal: React.FC<LoginModalProps> = ({ isOpen, onClose, onSuccess, initialError }) => {
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(initialError || null)
+  const isWebEnvironment = typeof window !== 'undefined' && !window.electronAPI
 
   React.useEffect(() => {
     if (initialError) {
@@ -43,7 +44,7 @@ export const LoginModal: React.FC<LoginModalProps> = ({ isOpen, onSuccess, initi
           setError(res.error || 'Authentication failed. Please verify credentials.')
         }
       } else {
-        setError('Desktop application bridge unavailable. Cannot authenticate.')
+        setError('Desktop application bridge unavailable. TripleS Time Tracker must be run as an installed Windows Desktop Application (.exe) to track activity and sync sessions.')
       }
     } catch (err: any) {
       setError(err.message || 'An unexpected error occurred during authentication')
@@ -55,13 +56,23 @@ export const LoginModal: React.FC<LoginModalProps> = ({ isOpen, onSuccess, initi
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/75 backdrop-blur-sm animate-fade-in font-sans">
       <div 
-        className="w-full max-w-sm rounded-2xl border p-6 shadow-2xl transition-all"
+        className="w-full max-w-sm rounded-2xl border p-6 shadow-2xl transition-all relative"
         style={{
           backgroundColor: 'var(--bg-surface)',
           borderColor: 'var(--border-color)',
           color: 'var(--text-primary)'
         }}
       >
+        {onClose && (
+          <button
+            onClick={onClose}
+            className="absolute top-4 right-4 text-xs font-semibold px-2 py-1 rounded hover:bg-white/10"
+            style={{ color: 'var(--text-secondary)' }}
+          >
+            ✕
+          </button>
+        )}
+
         <div className="flex flex-col items-center text-center mb-5">
           <div 
             className="w-12 h-12 rounded-xl flex items-center justify-center mb-3 shadow-md border"
@@ -82,9 +93,22 @@ export const LoginModal: React.FC<LoginModalProps> = ({ isOpen, onSuccess, initi
         </div>
 
         {error && (
-          <div className="flex items-center gap-2 p-3 mb-4 rounded-lg text-xs bg-red-500/10 text-red-400 border border-red-500/20">
-            <AlertCircle size={15} className="shrink-0" />
-            <span>{error}</span>
+          <div className="p-3 mb-4 rounded-lg text-xs bg-red-500/10 text-red-400 border border-red-500/20 space-y-2">
+            <div className="flex items-start gap-2">
+              <AlertCircle size={15} className="shrink-0 mt-0.5" />
+              <span className="leading-relaxed">{error}</span>
+            </div>
+            {isWebEnvironment && (
+              <a
+                href="https://github.com/devtriplesproduction/triples-time-tracker/releases"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="mt-2 w-full py-2 px-3 rounded-lg font-semibold text-xs flex items-center justify-center gap-1.5 bg-red-500/20 hover:bg-red-500/30 text-white transition-colors"
+              >
+                <Download size={13} />
+                <span>Download Windows App (.exe)</span>
+              </a>
+            )}
           </div>
         )}
 
