@@ -28,7 +28,7 @@ export const WebLandingScreen: React.FC<WebLandingScreenProps> = ({
   onPreviewUI
 }) => {
   const [downloadStarted, setDownloadStarted] = useState(false)
-  const releasesUrl = 'https://github.com/devtriplesproduction/triples-time-tracker/releases'
+  const directDownloadUrl = 'https://github.com/devtriplesproduction/triples-time-tracker/releases/download/v1.0.0/TripleS-Time-Tracker-1.0.0.exe'
   const erpUrl = 'https://triples-erp.vercel.app'
 
   const handleLaunchApp = () => {
@@ -43,7 +43,12 @@ export const WebLandingScreen: React.FC<WebLandingScreenProps> = ({
 
   const handleDownload = () => {
     setDownloadStarted(true)
-    window.open(releasesUrl, '_blank', 'noopener,noreferrer')
+    const link = document.createElement('a')
+    link.href = directDownloadUrl
+    link.setAttribute('download', 'TripleS-Time-Tracker-1.0.0.exe')
+    document.body.appendChild(link)
+    link.click()
+    document.body.removeChild(link)
   }
 
   return (
@@ -168,9 +173,11 @@ export const WebLandingScreen: React.FC<WebLandingScreenProps> = ({
 
           {/* Primary Action Buttons */}
           <div className="flex flex-col sm:flex-row items-center justify-center gap-3 w-full sm:w-auto">
-            <button
-              onClick={handleDownload}
-              className="w-full sm:w-auto px-6 py-3.5 rounded-xl font-bold text-sm flex items-center justify-center gap-2.5 transition-all shadow-lg active:scale-95"
+            <a
+              href={directDownloadUrl}
+              onClick={() => setDownloadStarted(true)}
+              download="TripleS-Time-Tracker-1.0.0.exe"
+              className="w-full sm:w-auto px-6 py-3.5 rounded-xl font-bold text-sm flex items-center justify-center gap-2.5 transition-all shadow-lg active:scale-95 cursor-pointer no-underline"
               style={{
                 backgroundColor: 'var(--btn-primary-bg)',
                 color: 'var(--btn-primary-text)'
@@ -178,7 +185,7 @@ export const WebLandingScreen: React.FC<WebLandingScreenProps> = ({
             >
               <Download size={18} />
               <span>Download for Windows (.exe)</span>
-            </button>
+            </a>
 
             <button
               onClick={handleLaunchApp}
@@ -195,9 +202,9 @@ export const WebLandingScreen: React.FC<WebLandingScreenProps> = ({
           </div>
 
           {downloadStarted && (
-            <div className="mt-4 flex items-center gap-2 text-xs text-emerald-400 font-medium">
+            <div className="mt-4 flex items-center gap-2 text-xs text-emerald-400 font-medium animate-fade-in">
               <CheckCircle2 size={15} />
-              <span>Opened release download in a new tab. Run the installer once downloaded!</span>
+              <span>Downloading TripleS-Time-Tracker-1.0.0.exe (73.4 MB). Open and run once completed!</span>
             </div>
           )}
 

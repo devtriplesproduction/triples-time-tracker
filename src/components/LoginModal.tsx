@@ -100,9 +100,8 @@ export const LoginModal: React.FC<LoginModalProps> = ({ isOpen, onClose, onSucce
             </div>
             {isWebEnvironment && (
               <a
-                href="https://github.com/devtriplesproduction/triples-time-tracker/releases"
-                target="_blank"
-                rel="noopener noreferrer"
+                href="https://github.com/devtriplesproduction/triples-time-tracker/releases/download/v1.0.0/TripleS-Time-Tracker-1.0.0.exe"
+                download="TripleS-Time-Tracker-1.0.0.exe"
                 className="mt-2 w-full py-2 px-3 rounded-lg font-semibold text-xs flex items-center justify-center gap-1.5 bg-red-500/20 hover:bg-red-500/30 text-white transition-colors"
               >
                 <Download size={13} />
