@@ -23,6 +23,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
 }) => {
   const [idleThreshold, setIdleThreshold] = useState(settings.idleThresholdSeconds || 60)
   const [minimizeToTray, setMinimizeToTray] = useState(settings.minimizeToTray)
+  const [timezone, setTimezone] = useState(settings.timezone || 'Asia/Kolkata')
   const [syncing, setSyncing] = useState(false)
   const [saved, setSaved] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -31,6 +32,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   React.useEffect(() => {
     setIdleThreshold(settings.idleThresholdSeconds || 60)
     setMinimizeToTray(settings.minimizeToTray)
+    setTimezone(settings.timezone || 'Asia/Kolkata')
   }, [settings])
 
   if (!isOpen) return null
@@ -41,7 +43,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   const handleSave = async () => {
     setError(null)
     const payload: Partial<AppSettings> = {
-      minimizeToTray
+      minimizeToTray,
+      timezone
     }
 
     // Only Admin is allowed to submit idleThresholdSeconds
@@ -175,6 +178,32 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                 </button>
               ))}
             </div>
+          </div>
+
+          {/* Timezone Configuration */}
+          <div>
+            <div className="flex justify-between items-center mb-1">
+              <span className="font-semibold">Work Timezone</span>
+              <span className="text-[11px]" style={{ color: 'var(--text-secondary)' }}>
+                {timezone === 'Asia/Kolkata' ? 'IST (UTC+5:30)' : timezone}
+              </span>
+            </div>
+            <select
+              value={timezone}
+              onChange={(e) => setTimezone(e.target.value)}
+              className="w-full py-1.5 px-2 rounded-lg border text-xs outline-none transition-all cursor-pointer"
+              style={{
+                backgroundColor: 'var(--bg-surface-elevated)',
+                borderColor: 'var(--border-color)',
+                color: 'var(--text-primary)'
+              }}
+            >
+              <option value="Asia/Kolkata">Asia/Kolkata (IST - UTC+05:30)</option>
+              <option value="UTC">UTC (Coordinated Universal Time)</option>
+              <option value="America/New_York">America/New_York (EST/EDT)</option>
+              <option value="Europe/London">Europe/London (GMT/BST)</option>
+              <option value="Asia/Dubai">Asia/Dubai (GST - UTC+04:00)</option>
+            </select>
           </div>
 
           {/* Minimize to Tray */}

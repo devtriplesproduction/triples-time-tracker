@@ -14,8 +14,16 @@ class ScreenshotService {
   public async captureScreen(): Promise<{ buffer: Buffer; width: number; height: number } | null> {
     try {
       const primaryDisplay = screen.getPrimaryDisplay()
-      const { width, height } = primaryDisplay.size
-      const scaleFactor = primaryDisplay.scaleFactor || 1
+
+      // Select screen where the user is currently active (cursor position) across multi-monitor setups
+      let targetDisplay = primaryDisplay
+      try {
+        const cursorPoint = screen.getCursorScreenPoint()
+        targetDisplay = screen.getDisplayNearestPoint(cursorPoint) || primaryDisplay
+      } catch (_) {}
+
+      const { width, height } = targetDisplay.size
+      const scaleFactor = targetDisplay.scaleFactor || 1
 
       // Capture at physical resolution or max 1920x1080 to ensure crisp readability while preserving space
       const fullWidth = Math.floor(width * scaleFactor)
@@ -36,12 +44,16 @@ class ScreenshotService {
         return null
       }
 
-      // Select primary screen or first available screen
-      const screenSource = sources.find(s => 
-        s.id.startsWith('screen:0') || 
-        s.name.toLowerCase().includes('screen 1') || 
-        s.name.toLowerCase().includes('entire')
-      ) || sources[0]
+      const displayIdStr = targetDisplay.id.toString()
+      let screenSource = sources.find(s => s.display_id === displayIdStr || s.id.includes(displayIdStr))
+
+      if (!screenSource) {
+        screenSource = sources.find(s => 
+          s.id.startsWith('screen:0') || 
+          s.name.toLowerCase().includes('screen 1') || 
+          s.name.toLowerCase().includes('entire')
+        ) || sources[0]
+      }
 
       if (!screenSource || !screenSource.thumbnail || screenSource.thumbnail.isEmpty()) {
         console.warn('[ScreenshotService] Screen thumbnail is empty.')

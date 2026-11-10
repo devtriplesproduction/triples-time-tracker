@@ -30,6 +30,8 @@ export const App: React.FC = () => {
   const [todaySessions, setTodaySessions] = useState<TrackingSession[]>([])
   const [todayWorkedMinutes, setTodayWorkedMinutes] = useState<number>(0)
   const [todayActiveMinutes, setTodayActiveMinutes] = useState<number>(0)
+  const [todayWorkedSeconds, setTodayWorkedSeconds] = useState<number>(0)
+  const [todayActiveSeconds, setTodayActiveSeconds] = useState<number>(0)
   const [pendingSyncCount, setPendingSyncCount] = useState<number>(0)
   const [isOnline, setIsOnline] = useState<boolean>(true)
   const [user, setUser] = useState<UserProfile | null>(null)
@@ -37,7 +39,8 @@ export const App: React.FC = () => {
     idleThresholdSeconds: 60,
     minimizeToTray: true,
     theme: 'dark',
-    apiUrl: 'http://localhost:3000'
+    apiUrl: 'https://erp.triplesproduction.com',
+    timezone: 'Asia/Kolkata'
   })
 
   // Synchronous ref to prevent stale closures in IPC event listeners
@@ -74,6 +77,8 @@ export const App: React.FC = () => {
       setTodaySessions([])
       setTodayWorkedMinutes(0)
       setTodayActiveMinutes(0)
+      setTodayWorkedSeconds(0)
+      setTodayActiveSeconds(0)
       setPendingSyncCount(0)
       return
     }
@@ -96,6 +101,8 @@ export const App: React.FC = () => {
         prev.clock_out === validSession.clock_out &&
         prev.worked_minutes === validSession.worked_minutes &&
         prev.active_minutes === validSession.active_minutes &&
+        prev.active_seconds_buffer === validSession.active_seconds_buffer &&
+        prev.suspended_seconds === validSession.suspended_seconds &&
         prev.breaks.length === validSession.breaks.length
       ) {
         return prev
@@ -111,6 +118,11 @@ export const App: React.FC = () => {
     setTodayWorkedMinutes((prev) => (prev === state.todayWorkedMinutes ? prev : state.todayWorkedMinutes))
     setTodayActiveMinutes((prev) => (prev === state.todayActiveMinutes ? prev : state.todayActiveMinutes))
 
+    const calcWorkedSec = state.todayWorkedSeconds ?? (state.todayWorkedMinutes * 60)
+    const calcActiveSec = state.todayActiveSeconds ?? (state.todayActiveMinutes * 60)
+    setTodayWorkedSeconds((prev) => (prev === calcWorkedSec ? prev : calcWorkedSec))
+    setTodayActiveSeconds((prev) => (prev === calcActiveSec ? prev : calcActiveSec))
+
     if (state.todaySessions) {
       const filtered = state.todaySessions.filter((s) => s.employee_id === activeUser.id)
       setTodaySessions((prev) => {
@@ -123,6 +135,7 @@ export const App: React.FC = () => {
             p.clock_out === f.clock_out &&
             p.worked_minutes === f.worked_minutes &&
             p.active_minutes === f.active_minutes &&
+            p.active_seconds_buffer === f.active_seconds_buffer &&
             p.breaks.length === f.breaks.length
           )
         })
@@ -196,6 +209,8 @@ export const App: React.FC = () => {
             setTodaySessions([])
             setTodayWorkedMinutes(0)
             setTodayActiveMinutes(0)
+            setTodayWorkedSeconds(0)
+            setTodayActiveSeconds(0)
             setIsLoginOpen(true)
           }
 
@@ -213,6 +228,8 @@ export const App: React.FC = () => {
           setStatus('Not Clocked In')
           setTodayWorkedMinutes(0)
           setTodayActiveMinutes(0)
+          setTodayWorkedSeconds(0)
+          setTodayActiveSeconds(0)
           setCurrentSession(null)
           setTodaySessions([])
           setIsLoginOpen(false)
@@ -471,6 +488,8 @@ export const App: React.FC = () => {
     setTodaySessions([])
     setTodayWorkedMinutes(0)
     setTodayActiveMinutes(0)
+    setTodayWorkedSeconds(0)
+    setTodayActiveSeconds(0)
     setPendingSyncCount(0)
     setAuthError(null)
     setIsSettingsOpen(false)
@@ -652,6 +671,8 @@ export const App: React.FC = () => {
                 currentSession={currentSession}
                 todaySessions={todaySessions}
                 status={status}
+                backendWorkedSeconds={todayWorkedSeconds}
+                backendActiveSeconds={todayActiveSeconds}
               />
             </div>
           </div>
@@ -690,6 +711,8 @@ export const App: React.FC = () => {
           setTodaySessions([])
           setTodayWorkedMinutes(0)
           setTodayActiveMinutes(0)
+          setTodayWorkedSeconds(0)
+          setTodayActiveSeconds(0)
           setPendingSyncCount(0)
           setSyncError(null)
           setAuthError(null)

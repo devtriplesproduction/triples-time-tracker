@@ -122,8 +122,14 @@ export function calculateSessionWorkedMsForDate(
   if (session.clock_out) {
     sessionEffectiveEndMs = new Date(session.clock_out).getTime()
   } else if (isBreak) {
-    const openBreak = session.breaks.find(b => b.end_time === null)
+    const openBreak = session.breaks?.find(b => b.end_time === null)
     sessionEffectiveEndMs = openBreak ? new Date(openBreak.start_time).getTime() : nowMs
+  } else if (nowMs - clockInMs > 24 * 60 * 60 * 1000) {
+    // Stale unclosed session older than 24h cannot extend into current date
+    const priorDayBounds = getKolkataDayBounds(session.session_date || clockInMs)
+    sessionEffectiveEndMs = session.last_heartbeat
+      ? Math.min(new Date(session.last_heartbeat).getTime(), priorDayBounds.dayEndMs)
+      : priorDayBounds.dayEndMs
   } else {
     sessionEffectiveEndMs = nowMs
   }
@@ -285,6 +291,9 @@ export function calculateDailyActiveSeconds(
 
   let totalActiveSeconds = 0
   for (const session of sessionMap.values()) {
+    // Only calculate active seconds if session belongs to or overlaps target date
+    if (session.session_date && session.session_date !== dateString) continue
+
     const workedSecondsOnDate = Math.floor(
       calculateSessionWorkedMsForDate(session, dateString, nowMs) / 1000
     )

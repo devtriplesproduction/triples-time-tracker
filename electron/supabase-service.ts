@@ -723,6 +723,14 @@ class SupabaseService {
             if (!error) storage.removePending(item.id, empId)
             else item.retries += 1
           }
+        } else if ((item.type as any) === 'leave') {
+          const { error } = await this.client.from('employee_leaves').insert(item.data)
+          if (!error) storage.removePending(item.id, empId)
+          else item.retries += 1
+        } else if ((item.type as any) === 'bug') {
+          const { error } = await this.client.from('bug_reports').insert(item.data)
+          if (!error) storage.removePending(item.id, empId)
+          else item.retries += 1
         }
       }
     } catch (e) {
@@ -887,6 +895,80 @@ class SupabaseService {
       return { success: true }
     } catch (err: any) {
       return { success: false, error: err.message || 'Failed to delete screenshot' }
+    }
+  }
+
+  public async submitBugReport(report: { title: string; description: string }): Promise<{ success: boolean; error?: string }> {
+    try {
+      const user = storage.getCurrentUser()
+      const payload = {
+        id: crypto.randomUUID(),
+        employee_id: user?.id || null,
+        employee_email: user?.email || 'anonymous',
+        title: report.title,
+        description: report.description,
+        app_version: '1.0.0',
+        platform: process.platform,
+        created_at: new Date().toISOString()
+      }
+
+      console.log(`[SupabaseService] Submitting bug report by ${payload.employee_email}: ${payload.title}`)
+      const { error } = await this.client.from('bug_reports').insert(payload)
+      if (error) {
+        console.warn('[SupabaseService] Remote bug_reports insert notice:', error.message)
+        if (user?.id) {
+          storage.enqueuePending({
+            id: `bug-${payload.id}`,
+            type: 'bug' as any,
+            employee_id: user.id,
+            data: payload,
+            createdAt: payload.created_at,
+            retries: 0
+          }, user.id)
+        }
+      }
+      return { success: true }
+    } catch (err: any) {
+      console.error('[SupabaseService] submitBugReport exception:', err)
+      return { success: false, error: err.message || 'Failed to submit bug report' }
+    }
+  }
+
+  public async applyLeave(leave: { leaveType: string; startDate: string; endDate: string; reason: string }): Promise<{ success: boolean; error?: string }> {
+    try {
+      const user = storage.getCurrentUser()
+      if (!user || !user.id) {
+        return { success: false, error: 'Authentication required to apply for leave.' }
+      }
+
+      const payload = {
+        id: crypto.randomUUID(),
+        employee_id: user.id,
+        leave_type: leave.leaveType,
+        start_date: leave.startDate,
+        end_date: leave.endDate || leave.startDate,
+        reason: leave.reason,
+        status: 'Pending',
+        created_at: new Date().toISOString()
+      }
+
+      console.log(`[SupabaseService] Submitting leave application for ${user.first_name}: ${leave.leaveType} (${leave.startDate} to ${payload.end_date})`)
+      const { error } = await this.client.from('employee_leaves').insert(payload)
+      if (error) {
+        console.warn('[SupabaseService] Remote employee_leaves insert notice:', error.message)
+        storage.enqueuePending({
+          id: `leave-${payload.id}`,
+          type: 'leave' as any,
+          employee_id: user.id,
+          data: payload,
+          createdAt: payload.created_at,
+          retries: 0
+        }, user.id)
+      }
+      return { success: true }
+    } catch (err: any) {
+      console.error('[SupabaseService] applyLeave exception:', err)
+      return { success: false, error: err.message || 'Failed to submit leave request' }
     }
   }
 

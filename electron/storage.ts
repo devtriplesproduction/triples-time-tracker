@@ -1,5 +1,6 @@
 import fs from 'fs'
 import path from 'path'
+import crypto from 'crypto'
 import { app, safeStorage } from 'electron'
 import type { TrackingSession, ActivityInterval, UserProfile, AppSettings, PendingSyncItem } from '../src/types'
 
@@ -30,7 +31,8 @@ const DEFAULT_SETTINGS: AppSettings = {
   idleThresholdSeconds: 60,
   minimizeToTray: true,
   theme: 'dark',
-  apiUrl: 'http://localhost:3000'
+  apiUrl: 'https://erp.triplesproduction.com',
+  timezone: 'Asia/Kolkata'
 }
 
 class TrackerStorage {
@@ -78,8 +80,84 @@ class TrackerStorage {
       return null
     }
 
-    // 5. Staleness check: sessions older than 24h cannot be active
-    if (Date.now() - clockInMs > 24 * 60 * 60 * 1000) {
+    // 5. Day boundary check: sessions from a previous date cannot be active on a new day
+    const today = this.getTodayBusinessDate()
+    if (session.session_date && session.session_date !== today) {
+      console.log(`[Storage] Session ${session.id} belongs to a previous date (${session.session_date} vs today ${today}). Finalizing at day boundary.`)
+      const closeTime = session.last_heartbeat || `${session.session_date}T23:59:59.999+05:30`
+      if (Array.isArray(session.breaks)) {
+        for (const b of session.breaks) {
+          if (b.end_time === null) {
+            b.end_time = closeTime
+            const bStart = new Date(b.start_time).getTime()
+            const bEnd = new Date(closeTime).getTime()
+            b.duration_minutes = Math.max(0, Math.floor((bEnd - bStart) / 60000))
+          }
+        }
+      }
+      session.clock_out = closeTime
+      session.status = 'completed'
+      const clockInTime = new Date(session.clock_in).getTime()
+      const clockOutTime = new Date(closeTime).getTime()
+      let totalBreakMs = 0
+      if (Array.isArray(session.breaks)) {
+        for (const b of session.breaks) {
+          if (b.end_time) {
+            totalBreakMs += Math.max(0, new Date(b.end_time).getTime() - new Date(b.start_time).getTime())
+          }
+        }
+      }
+      const suspendedMs = (session.suspended_seconds || 0) * 1000
+      session.worked_minutes = Math.max(0, Math.floor((clockOutTime - clockInTime - totalBreakMs - suspendedMs) / 60000))
+      return null
+    }
+
+    // 6. Heartbeat / Shutdown staleness check:
+    // If the PC was shut down or offline for more than 5 minutes, finalize the session at last heartbeat.
+    const now = Date.now()
+    if (session.last_heartbeat) {
+      const lastHbMs = new Date(session.last_heartbeat).getTime()
+      if (!isNaN(lastHbMs)) {
+        const gapMs = now - lastHbMs
+        if (gapMs > 5 * 60 * 1000) {
+          console.log(`[Storage] Session ${session.id} was interrupted by PC shutdown/offline gap (${Math.round(gapMs / 60000)}m). Finalizing at last heartbeat.`)
+          if (Array.isArray(session.breaks)) {
+            for (const b of session.breaks) {
+              if (b.end_time === null) {
+                b.end_time = session.last_heartbeat!
+                const bStart = new Date(b.start_time).getTime()
+                const bEnd = new Date(session.last_heartbeat!).getTime()
+                b.duration_minutes = Math.max(0, Math.floor((bEnd - bStart) / 60000))
+              }
+            }
+          }
+          session.clock_out = session.last_heartbeat
+          session.status = 'completed'
+          const clockInTime = new Date(session.clock_in).getTime()
+          const clockOutTime = new Date(session.last_heartbeat).getTime()
+          let totalBreakMs = 0
+          if (Array.isArray(session.breaks)) {
+            for (const b of session.breaks) {
+              if (b.end_time) {
+                totalBreakMs += Math.max(0, new Date(b.end_time).getTime() - new Date(b.start_time).getTime())
+              }
+            }
+          }
+          const suspendedMs = (session.suspended_seconds || 0) * 1000
+          session.worked_minutes = Math.max(0, Math.floor((clockOutTime - clockInTime - totalBreakMs - suspendedMs) / 60000))
+          return null
+        } else if (gapMs > 5000) {
+          // Quick reboot on the same day: add gap to suspended_seconds so shutdown downtime is NOT counted in worked hours
+          const addedSuspended = Math.floor(gapMs / 1000)
+          session.suspended_seconds = (session.suspended_seconds || 0) + addedSuspended
+          console.log(`[Storage] Quick reboot detected (${addedSuspended}s). Excluded from worked duration.`)
+          session.last_heartbeat = new Date(now).toISOString()
+        }
+      }
+    }
+
+    // 7. Staleness check: sessions older than 24h cannot be active
+    if (now - clockInMs > 24 * 60 * 60 * 1000) {
       console.log(`[Storage] Session ${session.id} is stale (>24 hours elapsed since clock_in). Marking completed.`)
       session.status = 'completed'
       session.clock_out = new Date(clockInMs + 24 * 60 * 60 * 1000).toISOString()
@@ -195,10 +273,53 @@ class TrackerStorage {
           }
         }
 
+        const todayBusinessDate = new Intl.DateTimeFormat('en-CA', {
+          timeZone: parsed.settings?.timezone || 'Asia/Kolkata',
+          year: 'numeric',
+          month: '2-digit',
+          day: '2-digit'
+        }).format(new Date())
+
         // Normalize and validate sessions inside employeeData
         for (const empId of Object.keys(employeeData)) {
           const store = employeeData[empId]
+
+          // 1. Sanitize historical todaySessions to close any stale sessions from prior dates
+          if (Array.isArray(store.todaySessions)) {
+            for (const s of store.todaySessions) {
+              if (s.suspended_seconds && s.suspended_seconds < 0) {
+                s.suspended_seconds = 0
+              }
+              if (s.session_date && s.session_date !== todayBusinessDate && (!s.clock_out || s.status === 'working')) {
+                const closeTime = s.last_heartbeat || `${s.session_date}T23:59:59.999+05:30`
+                s.clock_out = closeTime
+                s.status = 'completed'
+                const cIn = new Date(s.clock_in).getTime()
+                const cOut = new Date(closeTime).getTime()
+                s.worked_minutes = Math.max(0, Math.floor((cOut - cIn) / 60000))
+              }
+            }
+
+            // Close duplicate open sessions on today, keeping only the most recent one open
+            const openToday = store.todaySessions.filter(s => s.session_date === todayBusinessDate && !s.clock_out)
+            if (openToday.length > 1) {
+              for (let i = 0; i < openToday.length - 1; i++) {
+                const curr = openToday[i]
+                const next = openToday[i + 1]
+                curr.clock_out = next.clock_in
+                curr.status = 'completed'
+                const cIn = new Date(curr.clock_in).getTime()
+                const cOut = new Date(next.clock_in).getTime()
+                curr.worked_minutes = Math.max(0, Math.floor((cOut - cIn) / 60000))
+              }
+            }
+          }
+
+          // 2. Validate currentSession
           if (store.currentSession) {
+            if (store.currentSession.suspended_seconds && store.currentSession.suspended_seconds < 0) {
+              store.currentSession.suspended_seconds = 0
+            }
             const valid = this.validateActiveSession(store.currentSession, empId)
             if (!valid) {
               const prev = store.currentSession
@@ -339,20 +460,60 @@ class TrackerStorage {
     return this.data.employeeData[employeeId]
   }
 
+  private getMachineFallbackKey(): Buffer {
+    const machineId = (process.env.COMPUTERNAME || process.env.HOSTNAME || 'TripleS') +
+      (process.env.USERNAME || process.env.USER || 'Tracker') +
+      'TripleS-TimeTracker-SecureSalt-2026'
+    return crypto.createHash('sha256').update(machineId).digest()
+  }
+
+  private fallbackEncrypt(plainText: string): string {
+    const key = this.getMachineFallbackKey()
+    const iv = crypto.randomBytes(12)
+    const cipher = crypto.createCipheriv('aes-256-gcm', key, iv)
+    let encrypted = cipher.update(plainText, 'utf8', 'base64')
+    encrypted += cipher.final('base64')
+    const authTag = cipher.getAuthTag()
+    return `aes-gcm:${iv.toString('base64')}:${authTag.toString('base64')}:${encrypted}`
+  }
+
+  private fallbackDecrypt(cipherText: string): string {
+    if (cipherText.startsWith('aes-gcm:')) {
+      const parts = cipherText.split(':')
+      if (parts.length === 4) {
+        const iv = Buffer.from(parts[1], 'base64')
+        const authTag = Buffer.from(parts[2], 'base64')
+        const encryptedData = parts[3]
+        const key = this.getMachineFallbackKey()
+        const decipher = crypto.createDecipheriv('aes-256-gcm', key, iv)
+        decipher.setAuthTag(authTag)
+        let decrypted = decipher.update(encryptedData, 'base64', 'utf8')
+        decrypted += decipher.final('utf8')
+        return decrypted
+      }
+    }
+    return Buffer.from(cipherText, 'base64').toString('utf-8')
+  }
+
   public getAuthTokens(): { access_token: string; refresh_token: string; expires_at?: number } | null {
     if (!this.data.encryptedAuthTokens) return null
     try {
-      if (safeStorage && safeStorage.isEncryptionAvailable()) {
+      if (safeStorage && safeStorage.isEncryptionAvailable() && !this.data.encryptedAuthTokens.startsWith('aes-gcm:')) {
         const buffer = Buffer.from(this.data.encryptedAuthTokens, 'base64')
         const decrypted = safeStorage.decryptString(buffer)
         return JSON.parse(decrypted)
       } else {
-        const decoded = Buffer.from(this.data.encryptedAuthTokens, 'base64').toString('utf-8')
-        return JSON.parse(decoded)
+        const decrypted = this.fallbackDecrypt(this.data.encryptedAuthTokens)
+        return JSON.parse(decrypted)
       }
     } catch (e) {
-      console.warn('[Storage] Failed to decrypt auth tokens:', e)
-      return null
+      try {
+        const decrypted = this.fallbackDecrypt(this.data.encryptedAuthTokens)
+        return JSON.parse(decrypted)
+      } catch (innerErr) {
+        console.warn('[Storage] Failed to decrypt auth tokens:', e)
+        return null
+      }
     }
   }
 
@@ -368,7 +529,7 @@ class TrackerStorage {
         const encrypted = safeStorage.encryptString(jsonStr)
         this.data.encryptedAuthTokens = encrypted.toString('base64')
       } else {
-        this.data.encryptedAuthTokens = Buffer.from(jsonStr, 'utf-8').toString('base64')
+        this.data.encryptedAuthTokens = this.fallbackEncrypt(jsonStr)
       }
       this.save()
     } catch (e) {
@@ -434,6 +595,11 @@ class TrackerStorage {
         store.todaySessions[idx] = session
       } else {
         store.todaySessions.push(session)
+      }
+
+      // Cap todaySessions to max 100 historical sessions to prevent unbounded file growth
+      if (store.todaySessions.length > 100) {
+        store.todaySessions = store.todaySessions.slice(-100)
       }
 
       // Only assign currentSession if the session is genuinely active
@@ -510,8 +676,12 @@ class TrackerStorage {
     const exists = store.pendingSyncQueue.find(p => p.id === item.id)
     if (!exists) {
       store.pendingSyncQueue.push(item)
-      if (store.pendingSyncQueue.length > 500) {
-        store.pendingSyncQueue = store.pendingSyncQueue.slice(-500)
+      // Expand capacity to 1000 items, and never drop critical sessions, leaves, or bug reports
+      if (store.pendingSyncQueue.length > 1000) {
+        const critical = store.pendingSyncQueue.filter(p => ['session', 'leave', 'bug'].includes(p.type))
+        const nonCritical = store.pendingSyncQueue.filter(p => !['session', 'leave', 'bug'].includes(p.type))
+        const retainCount = Math.max(0, 1000 - critical.length)
+        store.pendingSyncQueue = [...nonCritical.slice(-retainCount), ...critical]
       }
       this.save()
     }
@@ -543,12 +713,22 @@ class TrackerStorage {
   }
 
   public getTodayBusinessDate(): string {
-    return new Intl.DateTimeFormat('en-CA', {
-      timeZone: 'Asia/Kolkata',
-      year: 'numeric',
-      month: '2-digit',
-      day: '2-digit'
-    }).format(new Date())
+    const tz = this.data?.settings?.timezone || 'Asia/Kolkata'
+    try {
+      return new Intl.DateTimeFormat('en-CA', {
+        timeZone: tz,
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit'
+      }).format(new Date())
+    } catch {
+      return new Intl.DateTimeFormat('en-CA', {
+        timeZone: 'Asia/Kolkata',
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit'
+      }).format(new Date())
+    }
   }
 
   /**
@@ -567,7 +747,8 @@ class TrackerStorage {
       if (s.employee_id !== empId) return false
       if (s.session_date === target) return true
       const clockInMs = new Date(s.clock_in).getTime()
-      const endMs = s.clock_out ? new Date(s.clock_out).getTime() : Date.now()
+      if (!s.clock_out) return false
+      const endMs = new Date(s.clock_out).getTime()
       return clockInMs < targetEndMs && endMs > targetStartMs
     })
   }
@@ -583,6 +764,9 @@ class TrackerStorage {
     if (!empId) return
     const store = this.getEmployeeData(empId)
     store.todaySessions = sessions.filter(s => s.employee_id === empId)
+    if (store.todaySessions.length > 100) {
+      store.todaySessions = store.todaySessions.slice(-100)
+    }
     this.save()
   }
 

@@ -31,6 +31,8 @@ export interface TrackingSession {
   active_minutes: number
   suspended_seconds?: number
   active_seconds_buffer?: number
+  screenshot_seconds_buffer?: number
+  last_heartbeat?: string
   breaks: BreakRecord[]
 }
 
@@ -94,6 +96,7 @@ export interface AppSettings {
   minimizeToTray: boolean
   theme: 'dark' | 'light'
   apiUrl: string
+  timezone?: string
 }
 
 export interface ElectronAPI {
@@ -116,6 +119,7 @@ export interface ElectronAPI {
   saveSettings: (settings: Partial<AppSettings>) => Promise<{ success: boolean; error?: string }>
   openExternal?: (url: string) => Promise<void>
   submitBugReport?: (report: { title: string; description: string }) => Promise<{ success: boolean; error?: string }>
+  applyLeave?: (leave: { leaveType: string; startDate: string; endDate: string; reason: string }) => Promise<{ success: boolean; error?: string }>
   onStateUpdate: (callback: (state: TrackingState) => void) => () => void
 
   // Screenshot and Admin methods

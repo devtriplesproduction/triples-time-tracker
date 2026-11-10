@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, Tray, Menu, nativeImage, Notification, shell } from 'electron'
+import { app, BrowserWindow, ipcMain, Tray, Menu, nativeImage, Notification, shell, powerMonitor } from 'electron'
 import path from 'path'
 import fs from 'fs'
 import { storage } from './storage'
@@ -110,6 +110,7 @@ function createWindow() {
     webPreferences: {
       contextIsolation: true,
       nodeIntegration: false,
+      backgroundThrottling: false,
       preload: path.join(__dirname, 'preload.js')
     }
   })
@@ -164,12 +165,20 @@ app.whenReady().then(async () => {
       createWindow()
     }
   })
+  powerMonitor.on('shutdown', () => {
+    console.log('[Main] powerMonitor shutdown event received.')
+    activityTracker.handleSystemShutdown()
+  })
+})
+
+;(app as any).on('session-end', () => {
+  console.log('[Main] app session-end event received.')
+  activityTracker.handleSystemShutdown()
 })
 
 app.on('before-quit', () => {
   isQuitting = true
-  activityTracker.stop()
-  storage.flush()
+  activityTracker.handleSystemShutdown()
 })
 
 app.on('window-all-closed', () => {
@@ -396,9 +405,11 @@ ipcMain.handle('tracker:get-today-sessions', () => {
 })
 
 ipcMain.handle('tracker:submit-bug-report', async (_event, report: { title: string; description: string }) => {
-  const user = storage.getCurrentUser()
-  console.log(`[BugReport] Submitted by ${user?.email || 'anonymous'}:`, report)
-  return { success: true }
+  return await supabaseService.submitBugReport(report)
+})
+
+ipcMain.handle('tracker:apply-leave', async (_event, leave: { leaveType: string; startDate: string; endDate: string; reason: string }) => {
+  return await supabaseService.applyLeave(leave)
 })
 
 // Screenshots inspection & capture IPC handlers

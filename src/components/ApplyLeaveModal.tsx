@@ -26,7 +26,10 @@ export const ApplyLeaveModal: React.FC<ApplyLeaveModalProps> = ({
   if (!isOpen) return null
 
   const handleOpenERPLeave = () => {
-    const url = `${settings.apiUrl || 'http://localhost:3000'}/leave`
+    const baseUrl = settings.apiUrl && settings.apiUrl !== 'http://localhost:3000'
+      ? settings.apiUrl
+      : 'https://erp.triplesproduction.com'
+    const url = `${baseUrl}/leave`
     if (window.electronAPI?.openExternal) {
       window.electronAPI.openExternal(url)
     } else {
@@ -34,7 +37,7 @@ export const ApplyLeaveModal: React.FC<ApplyLeaveModalProps> = ({
     }
   }
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
     if (!startDate || !reason.trim()) {
       setError('Please select date and provide reason.')
@@ -43,14 +46,33 @@ export const ApplyLeaveModal: React.FC<ApplyLeaveModalProps> = ({
 
     setLoading(true)
     setError(null)
-    setTimeout(() => {
-      setLoading(false)
+
+    try {
+      if (window.electronAPI?.applyLeave) {
+        const res = await window.electronAPI.applyLeave({
+          leaveType,
+          startDate,
+          endDate: endDate || startDate,
+          reason: reason.trim()
+        })
+        if (res && !res.success) {
+          setError(res.error || 'Failed to submit leave application')
+          return
+        }
+      }
       setSubmitted(true)
       setTimeout(() => {
         setSubmitted(false)
+        setStartDate('')
+        setEndDate('')
+        setReason('')
         onClose()
       }, 1800)
-    }, 600)
+    } catch (err: any) {
+      setError(err.message || 'Failed to submit leave application')
+    } finally {
+      setLoading(false)
+    }
   }
 
   return (

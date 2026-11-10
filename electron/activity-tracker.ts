@@ -5,7 +5,7 @@ import fs from 'fs'
 import { storage } from './storage'
 import { screenshotService } from './screenshot-service'
 import type { TrackingState, TrackingStatus, ActivityInterval, TrackingSession, BreakRecord, UserProfile } from '../src/types'
-import { calculateDailyWorkedSeconds, calculateDailyActiveSeconds } from '../src/utils/timeCalculator'
+import { calculateDailyWorkedSeconds, calculateDailyActiveSeconds, getKolkataDayBounds } from '../src/utils/timeCalculator'
 
 class ActivityTracker {
   private timer: NodeJS.Timeout | null = null
@@ -14,6 +14,9 @@ class ActivityTracker {
   private currentApp: string = 'Desktop Work'
   private currentTitle: string = ''
   private lastInputCheckTime: number = Date.now()
+  private lastTickTime: number = Date.now()
+  private lastHrTime: bigint = process.hrtime.bigint()
+  private currentBusinessDate: string = ''
   private activeSecondsBuffer: number = 0
   private isSuspended: boolean = false
   private isScreenLocked: boolean = false
@@ -24,6 +27,7 @@ class ActivityTracker {
   private screenshotSecondsBuffer: number = 0
 
   constructor() {
+    this.currentBusinessDate = storage.getTodayBusinessDate()
     this.setupPowerMonitor()
   }
 
@@ -78,25 +82,37 @@ class ActivityTracker {
       this.lastInputCheckTime = Date.now()
       this.emitState()
     })
+
+    powerMonitor.on('shutdown', () => {
+      console.log('[PowerMonitor] System shutdown event received. Finalizing active session.')
+      this.handleSystemShutdown()
+    })
   }
 
   public start() {
     if (this.timer) clearInterval(this.timer)
     if (this.appDetectTimer) clearInterval(this.appDetectTimer)
 
+    this.lastTickTime = Date.now()
+    this.lastHrTime = process.hrtime.bigint()
+    this.lastHrTime = process.hrtime.bigint()
+    this.currentBusinessDate = storage.getTodayBusinessDate()
+
     const user = storage.getCurrentUser()
     const session = user ? storage.getCurrentSession(user.id) : null
-    if (session && session.active_seconds_buffer) {
-      this.activeSecondsBuffer = session.active_seconds_buffer
+    if (session) {
+      this.activeSecondsBuffer = session.active_seconds_buffer || 0
+      this.screenshotSecondsBuffer = session.screenshot_seconds_buffer || 0
     } else {
       this.activeSecondsBuffer = 0
+      this.screenshotSecondsBuffer = 0
     }
 
     // Tick every 1 second for active timer updates
     this.timer = setInterval(() => this.tick(), 1000)
 
-    // Check foreground application every 10 seconds
-    this.appDetectTimer = setInterval(() => this.detectForegroundApp(), 10000)
+    // Check foreground application every 15 seconds (optimized for reduced CPU overhead)
+    this.appDetectTimer = setInterval(() => this.detectForegroundApp(), 15000)
     this.detectForegroundApp()
   }
 
@@ -111,10 +127,11 @@ class ActivityTracker {
     const session = storage.getCurrentSession(user.id)
     if (session && (session.status === 'working' || session.status === 'Working' || session.status === 'on_break' || session.status === 'On Break')) {
       this.activeSecondsBuffer = session.active_seconds_buffer || 0
+      this.screenshotSecondsBuffer = session.screenshot_seconds_buffer || 0
     } else {
       this.activeSecondsBuffer = 0
+      this.screenshotSecondsBuffer = 0
     }
-    this.screenshotSecondsBuffer = 0
     this.emitState()
   }
 
@@ -203,12 +220,41 @@ class ActivityTracker {
       return
     }
 
+    const today = storage.getTodayBusinessDate()
+    if (this.currentBusinessDate && this.currentBusinessDate !== today) {
+      this.handleDayRollover(this.currentBusinessDate, today)
+      return
+    }
+    this.currentBusinessDate = today
+
     const settings = storage.getSettings()
     const idleSeconds = powerMonitor.getSystemIdleTime()
     const isIdle = idleSeconds >= settings.idleThresholdSeconds
 
-    // Calculate worked duration for current employee session excluding breaks and sleep
+    // Calculate real elapsed time delta with monotonic anti-tamper validation
     const now = Date.now()
+    const nowHr = process.hrtime.bigint()
+    const monotonicDeltaMs = Number(nowHr - this.lastHrTime) / 1_000_000
+    this.lastHrTime = nowHr
+
+    let deltaMs = this.lastTickTime ? (now - this.lastTickTime) : 1000
+    this.lastTickTime = now
+
+    // Anti-tampering: if system clock jumped or was manually altered, clamp to monotonic time
+    if (Math.abs(deltaMs - monotonicDeltaMs) > 3000) {
+      console.warn(`[ActivityTracker] System clock anomaly detected (wall: ${deltaMs}ms vs monotonic: ${Math.round(monotonicDeltaMs)}ms). Clamping to monotonic delta.`)
+      const clockJumpSec = Math.round((deltaMs - monotonicDeltaMs) / 1000)
+      if (clockJumpSec > 0) {
+        session.suspended_seconds = Math.max(0, (session.suspended_seconds || 0) + clockJumpSec)
+      }
+      deltaMs = Math.min(3000, Math.max(0, monotonicDeltaMs))
+    }
+    deltaMs = Math.min(3000, Math.max(0, deltaMs))
+    const deltaSec = deltaMs / 1000
+
+    session.last_heartbeat = new Date(now).toISOString()
+
+    // Calculate worked duration for current employee session excluding breaks and sleep
     const clockInTime = new Date(session.clock_in).getTime()
 
     let totalBreakMs = 0
@@ -225,10 +271,11 @@ class ActivityTracker {
     const isWorking = session.status === 'Working' || session.status === 'working'
     let minuteRolledOver = false
     if (isWorking && !isIdle && !this.isSuspended && !this.isScreenLocked) {
-      this.activeSecondsBuffer += 1
+      this.activeSecondsBuffer += deltaSec
       if (this.activeSecondsBuffer >= 60) {
-        session.active_minutes += 1
-        this.activeSecondsBuffer = 0
+        const addedMinutes = Math.floor(this.activeSecondsBuffer / 60)
+        session.active_minutes += addedMinutes
+        this.activeSecondsBuffer = this.activeSecondsBuffer % 60
         minuteRolledOver = true
 
         const interval: ActivityInterval = {
@@ -245,7 +292,7 @@ class ActivityTracker {
       }
 
       // Automatic 7-minute periodic screenshot capture (420 active working seconds)
-      this.screenshotSecondsBuffer += 1
+      this.screenshotSecondsBuffer += deltaSec
       if (this.screenshotSecondsBuffer >= 420) {
         this.screenshotSecondsBuffer = 0
         screenshotService.captureAndSaveScreenshot(
@@ -263,20 +310,23 @@ class ActivityTracker {
       }
     }
 
-    session.active_seconds_buffer = this.activeSecondsBuffer
+    session.active_seconds_buffer = Math.round(this.activeSecondsBuffer)
+    session.screenshot_seconds_buffer = Math.round(this.screenshotSecondsBuffer)
     storage.updateCurrentSession({
       worked_minutes: session.worked_minutes,
       active_minutes: session.active_minutes,
       suspended_seconds: session.suspended_seconds || 0,
-      active_seconds_buffer: this.activeSecondsBuffer
+      active_seconds_buffer: session.active_seconds_buffer,
+      screenshot_seconds_buffer: session.screenshot_seconds_buffer,
+      last_heartbeat: session.last_heartbeat
     }, user.id, minuteRolledOver)
 
     this.tickCounter += 1
     const idleChanged = isIdle !== this.lastEmittedIdle
     this.lastEmittedIdle = isIdle
 
-    // Emit immediately when idle state changes, active minute completes, or periodically every 5 ticks
-    if (idleChanged || minuteRolledOver || (this.tickCounter % 5 === 0)) {
+    // Emit every second when active or on break so that live counters update smoothly, or on idle change or minute rollover
+    if (isWorking || session.status === 'on_break' || idleChanged || minuteRolledOver || (this.tickCounter % 5 === 0)) {
       this.emitState()
     }
   }
@@ -307,9 +357,8 @@ class ActivityTracker {
     const isIdle = idleSeconds >= settings.idleThresholdSeconds
 
     const todaySessions = storage.getTodaySessions(empId)
-    const allSessions = storage.getAllSessions ? storage.getAllSessions(empId) : todaySessions
-    const todayWorkedSeconds = calculateDailyWorkedSeconds(session, allSessions)
-    const todayActiveSeconds = calculateDailyActiveSeconds(session, allSessions)
+    const todayWorkedSeconds = calculateDailyWorkedSeconds(session, todaySessions)
+    const todayActiveSeconds = calculateDailyActiveSeconds(session, todaySessions)
     const todayWorkedMinutes = Math.min(1440, Math.floor(todayWorkedSeconds / 60))
     const totalTodayActive = Math.min(1440, Math.floor(todayActiveSeconds / 60))
 
@@ -360,20 +409,26 @@ class ActivityTracker {
     }
 
     const today = storage.getTodayBusinessDate()
+    const nowIso = new Date().toISOString()
     const newSession: TrackingSession = {
       id: crypto.randomUUID(),
       employee_id: employeeId,
       session_date: today,
-      clock_in: new Date().toISOString(),
+      clock_in: nowIso,
       clock_out: null,
       status: 'working',
       worked_minutes: 0,
       active_minutes: 0,
       suspended_seconds: 0,
       active_seconds_buffer: 0,
+      screenshot_seconds_buffer: this.screenshotSecondsBuffer,
+      last_heartbeat: nowIso,
       breaks: []
     }
 
+    this.lastTickTime = Date.now()
+    this.lastHrTime = process.hrtime.bigint()
+    this.currentBusinessDate = today
     storage.setCurrentSession(newSession, employeeId)
     this.activeSecondsBuffer = 0
     if (shouldEmit) {
@@ -491,6 +546,136 @@ class ActivityTracker {
     this.screenshotSecondsBuffer = 0
     this.emitState()
     return session
+  }
+
+  /**
+   * Handles Windows/system shutdown, logoff, or app quitting.
+   * Immediately finalizes active session and flushes storage to disk
+   * so both worked and active hours stop cleanly without phantom accumulation.
+   */
+  public handleSystemShutdown() {
+    console.log('[ActivityTracker] Handling system shutdown: stopping tracker and finalizing session.')
+    this.stop()
+
+    const user = storage.getCurrentUser()
+    if (!user) return
+
+    const session = storage.getCurrentSession(user.id)
+    if (!session || session.clock_out || session.status === 'completed' || session.status === 'Completed') {
+      storage.flush()
+      return
+    }
+
+    const now = new Date()
+    const nowIso = now.toISOString()
+
+    // Close any ongoing break
+    const ongoingBreak = session.breaks?.find(b => b.end_time === null)
+    if (ongoingBreak) {
+      ongoingBreak.end_time = nowIso
+      const startMs = new Date(ongoingBreak.start_time).getTime()
+      ongoingBreak.duration_minutes = Math.max(0, Math.floor((now.getTime() - startMs) / 60000))
+    }
+
+    session.clock_out = nowIso
+    session.status = 'completed'
+    session.last_heartbeat = nowIso
+
+    const clockInTime = new Date(session.clock_in).getTime()
+    let totalBreakMs = 0
+    for (const b of session.breaks || []) {
+      if (b.end_time) {
+        totalBreakMs += Math.max(0, new Date(b.end_time).getTime() - new Date(b.start_time).getTime())
+      }
+    }
+    const suspendedMs = (session.suspended_seconds || 0) * 1000
+    const finalWorkedMs = Math.max(0, now.getTime() - clockInTime - totalBreakMs - suspendedMs)
+    session.worked_minutes = Math.floor(finalWorkedMs / 60000)
+
+    storage.setCurrentSession(null, user.id)
+    const store = storage.getEmployeeData(user.id)
+    const idx = store.todaySessions.findIndex(s => s.id === session.id)
+    if (idx !== -1) {
+      store.todaySessions[idx] = session
+    } else {
+      store.todaySessions.push(session)
+    }
+
+    storage.enqueuePending({
+      id: `session-${session.id}`,
+      type: 'session',
+      employee_id: user.id,
+      data: session,
+      createdAt: nowIso,
+      retries: 0
+    }, user.id)
+
+    this.activeSecondsBuffer = 0
+    this.screenshotSecondsBuffer = 0
+    storage.flush()
+  }
+
+  /**
+   * Handles day rollover at midnight (00:00:00 Asia/Kolkata).
+   * Finalizes yesterday's session at the day boundary and resets
+   * all daily metrics and session state for the new day.
+   */
+  public handleDayRollover(previousDay: string, newDay: string) {
+    console.log(`[ActivityTracker] Day rollover detected (${previousDay} -> ${newDay}). Resetting day.`)
+    const user = storage.getCurrentUser()
+    if (user) {
+      const session = storage.getCurrentSession(user.id)
+      if (session && !session.clock_out && session.status !== 'completed' && session.status !== 'Completed') {
+        const { dayEndMs } = getKolkataDayBounds(previousDay)
+        const closeIso = new Date(dayEndMs - 1).toISOString()
+
+        const ongoingBreak = session.breaks?.find(b => b.end_time === null)
+        if (ongoingBreak) {
+          ongoingBreak.end_time = closeIso
+          const startMs = new Date(ongoingBreak.start_time).getTime()
+          ongoingBreak.duration_minutes = Math.max(0, Math.floor((dayEndMs - startMs) / 60000))
+        }
+
+        session.clock_out = closeIso
+        session.status = 'completed'
+
+        const clockInTime = new Date(session.clock_in).getTime()
+        let totalBreakMs = 0
+        for (const b of session.breaks || []) {
+          if (b.end_time) {
+            totalBreakMs += Math.max(0, new Date(b.end_time).getTime() - new Date(b.start_time).getTime())
+          }
+        }
+        const suspendedMs = (session.suspended_seconds || 0) * 1000
+        const finalWorkedMs = Math.max(0, dayEndMs - clockInTime - totalBreakMs - suspendedMs)
+        session.worked_minutes = Math.floor(finalWorkedMs / 60000)
+
+        storage.setCurrentSession(null, user.id)
+        const store = storage.getEmployeeData(user.id)
+        const idx = store.todaySessions.findIndex(s => s.id === session.id)
+        if (idx !== -1) {
+          store.todaySessions[idx] = session
+        } else {
+          store.todaySessions.push(session)
+        }
+
+        storage.enqueuePending({
+          id: `session-${session.id}`,
+          type: 'session',
+          employee_id: user.id,
+          data: session,
+          createdAt: closeIso,
+          retries: 0
+        }, user.id)
+
+        storage.flush()
+      }
+    }
+
+    this.activeSecondsBuffer = 0
+    this.screenshotSecondsBuffer = 0
+    this.currentBusinessDate = newDay
+    this.emitState()
   }
 }
 

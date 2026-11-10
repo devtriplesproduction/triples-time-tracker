@@ -30,7 +30,10 @@ export const WorkReportModal: React.FC<WorkReportModalProps> = ({
   }
 
   const handleOpenERPReport = () => {
-    const url = `${settings.apiUrl || 'http://localhost:3000'}/attendance`
+    const baseUrl = settings.apiUrl && settings.apiUrl !== 'http://localhost:3000'
+      ? settings.apiUrl
+      : 'https://erp.triplesproduction.com'
+    const url = `${baseUrl}/attendance`
     if (window.electronAPI?.openExternal) {
       window.electronAPI.openExternal(url)
     } else {

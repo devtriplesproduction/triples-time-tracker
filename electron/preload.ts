@@ -25,6 +25,7 @@ const api: ElectronAPI = {
   getTodaySessions: () => ipcRenderer.invoke('tracker:get-today-sessions'),
   openExternal: (url: string) => ipcRenderer.invoke('window:open-external', url),
   submitBugReport: (report: { title: string; description: string }) => ipcRenderer.invoke('tracker:submit-bug-report', report),
+  applyLeave: (leave: { leaveType: string; startDate: string; endDate: string; reason: string }) => ipcRenderer.invoke('tracker:apply-leave', leave),
 
   getAllEmployeesForAdmin: () => ipcRenderer.invoke('screenshots:get-all-employees'),
   getScreenshots: (params: { employeeId: string; sessionDate?: string; month?: string }) =>
