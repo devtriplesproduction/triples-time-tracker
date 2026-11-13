@@ -14,6 +14,7 @@ import { HelpModal } from './components/HelpModal'
 import { AdminScreenshotsModal } from './components/AdminScreenshotsModal'
 import { WebLandingScreen } from './components/WebLandingScreen'
 import { Monitor } from 'lucide-react'
+import { getKolkataDateString } from './utils/timeCalculator'
 import type {
   TrackingState,
   TrackingStatus,
@@ -46,6 +47,38 @@ export const App: React.FC = () => {
   // Synchronous ref to prevent stale closures in IPC event listeners
   const userRef = useRef<UserProfile | null>(null)
   const applyStateRef = useRef<(state: TrackingState, currentUserOverride?: UserProfile | null) => void>(() => {})
+  const currentBusinessDateRef = useRef<string>(getKolkataDateString())
+
+  // Periodically check for midnight date rollover in the renderer
+  useEffect(() => {
+    const checkDayRollover = () => {
+      const today = getKolkataDateString()
+      if (currentBusinessDateRef.current && currentBusinessDateRef.current !== today) {
+        console.log(`[App] Day rollover detected (${currentBusinessDateRef.current} -> ${today}). Resetting daily state.`)
+        currentBusinessDateRef.current = today
+        setTodayWorkedMinutes(0)
+        setTodayActiveMinutes(0)
+        setTodayWorkedSeconds(0)
+        setTodayActiveSeconds(0)
+        setTodaySessions([])
+        if (window.electronAPI) {
+          window.electronAPI.getTrackingState().then((state) => {
+            if (userRef.current) applyStateRef.current(state, userRef.current)
+          })
+          if (window.electronAPI.getTodaySessions) {
+            window.electronAPI.getTodaySessions().then((sessions) => {
+              if (sessions && userRef.current) {
+                setTodaySessions(sessions.filter((s) => s.employee_id === userRef.current!.id && s.session_date === today))
+              }
+            })
+          }
+        }
+      }
+    }
+
+    const interval = setInterval(checkDayRollover, 10000)
+    return () => clearInterval(interval)
+  }, [])
 
   // Modals state
   const [isSettingsOpen, setIsSettingsOpen] = useState<boolean>(false)
@@ -124,7 +157,8 @@ export const App: React.FC = () => {
     setTodayActiveSeconds((prev) => (prev === calcActiveSec ? prev : calcActiveSec))
 
     if (state.todaySessions) {
-      const filtered = state.todaySessions.filter((s) => s.employee_id === activeUser.id)
+      const todayStr = getKolkataDateString()
+      const filtered = state.todaySessions.filter((s) => s.employee_id === activeUser.id && (s.session_date === todayStr || !s.session_date))
       setTodaySessions((prev) => {
         if (prev.length !== filtered.length) return filtered
         const isIdentical = prev.every((p, idx) => {
@@ -276,11 +310,13 @@ export const App: React.FC = () => {
         } else if (res.session && res.session.employee_id === activeUser.id) {
           setCurrentSession(res.session)
           setStatus(res.session.status)
+          const sessionDate = res.session.session_date || getKolkataDateString()
           setTodaySessions((prev) => {
-            const exists = prev.some((s) => s.id === res.session!.id)
+            const todayPrev = prev.filter((s) => s.session_date === sessionDate || !s.session_date)
+            const exists = todayPrev.some((s) => s.id === res.session!.id)
             return exists
-              ? prev.map((s) => (s.id === res.session!.id ? res.session! : s))
-              : [...prev, res.session!]
+              ? todayPrev.map((s) => (s.id === res.session!.id ? res.session! : s))
+              : [...todayPrev, res.session!]
           })
         }
       } else {

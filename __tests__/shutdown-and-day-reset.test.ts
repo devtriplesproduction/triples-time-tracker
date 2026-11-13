@@ -165,5 +165,36 @@ describe('Shutdown, Day-End Reset, and Accurate Time Tracking', () => {
     expect(workedSec).toBe(30 * 60)
     expect(formatSecondsToHHMMSS(workedSec)).toBe('00:30:00')
   })
+
+  it('unclosed session from yesterday with shutdown/gap does NOT leak into new day', () => {
+    // Yesterday: employee worked from 10:00 AM to 18:00 PM, then closed laptop without clicking Clock Out.
+    const unclosedYesterdaySession: TrackingSession = {
+      id: 'sess-unclosed-yesterday',
+      employee_id: employeeId,
+      session_date: '2026-11-09',
+      clock_in: '2026-11-09T10:00:00.000+05:30',
+      clock_out: null, // Left open!
+      status: 'working',
+      worked_minutes: 480,
+      active_minutes: 450,
+      suspended_seconds: 0,
+      active_seconds_buffer: 0,
+      last_heartbeat: '2026-11-09T18:00:00.000+05:30', // Last activity at 6 PM yesterday
+      breaks: []
+    }
+
+    // Today at 9:30 AM (less than 24h since clock-in, but last heartbeat was yesterday)
+    const todayMorningMs = new Date('2026-11-10T09:30:00.000+05:30').getTime()
+
+    // Querying daily metrics for today (2026-11-10):
+    const todayWorked = calculateDailyWorkedSeconds(unclosedYesterdaySession, [unclosedYesterdaySession], '2026-11-10', todayMorningMs)
+    const todayActive = calculateDailyActiveSeconds(unclosedYesterdaySession, [unclosedYesterdaySession], '2026-11-10', todayMorningMs)
+
+    // MUST be 00:00:00, NOT 9.5 hours!
+    expect(todayWorked).toBe(0)
+    expect(todayActive).toBe(0)
+    expect(formatSecondsToHHMMSS(todayWorked)).toBe('00:00:00')
+    expect(formatSecondsToHHMMSS(todayActive)).toBe('00:00:00')
+  })
 })
 

@@ -109,6 +109,16 @@ class TrackerStorage {
       }
       const suspendedMs = (session.suspended_seconds || 0) * 1000
       session.worked_minutes = Math.max(0, Math.floor((clockOutTime - clockInTime - totalBreakMs - suspendedMs) / 60000))
+
+      this.enqueuePending({
+        id: `session-${session.id}`,
+        type: 'session',
+        employee_id: session.employee_id,
+        data: session,
+        createdAt: closeTime,
+        retries: 0
+      }, session.employee_id)
+
       return null
     }
 
@@ -145,6 +155,16 @@ class TrackerStorage {
           }
           const suspendedMs = (session.suspended_seconds || 0) * 1000
           session.worked_minutes = Math.max(0, Math.floor((clockOutTime - clockInTime - totalBreakMs - suspendedMs) / 60000))
+
+          this.enqueuePending({
+            id: `session-${session.id}`,
+            type: 'session',
+            employee_id: session.employee_id,
+            data: session,
+            createdAt: session.last_heartbeat,
+            retries: 0
+          }, session.employee_id)
+
           return null
         } else if (gapMs > 5000) {
           // Quick reboot on the same day: add gap to suspended_seconds so shutdown downtime is NOT counted in worked hours
@@ -161,6 +181,16 @@ class TrackerStorage {
       console.log(`[Storage] Session ${session.id} is stale (>24 hours elapsed since clock_in). Marking completed.`)
       session.status = 'completed'
       session.clock_out = new Date(clockInMs + 24 * 60 * 60 * 1000).toISOString()
+
+      this.enqueuePending({
+        id: `session-${session.id}`,
+        type: 'session',
+        employee_id: session.employee_id,
+        data: session,
+        createdAt: session.clock_out,
+        retries: 0
+      }, session.employee_id)
+
       return null
     }
 

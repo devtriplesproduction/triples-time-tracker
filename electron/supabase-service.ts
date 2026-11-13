@@ -3,6 +3,7 @@ import WebSocket from 'ws'
 import fs from 'fs'
 import { storage } from './storage'
 import { activityTracker } from './activity-tracker'
+import { getKolkataDayBounds } from '../src/utils/timeCalculator'
 import type { UserProfile, TrackingSession, BreakRecord, ActivityInterval, PendingSyncItem, ScreenshotRecord } from '../src/types'
 
 // Provide WebSocket implementation for Node.js / Electron main process
@@ -400,26 +401,66 @@ class SupabaseService {
         return { success: true }
       }
 
-      const formattedSessions: TrackingSession[] = dbSessions.map((s: any) => ({
-        id: s.id,
-        employee_id: s.employee_id,
-        session_date: s.session_date,
-        clock_in: s.clock_in,
-        clock_out: s.clock_out,
-        status: s.status,
-        worked_minutes: s.worked_minutes,
-        active_minutes: s.active_minutes,
-        suspended_seconds: s.suspended_seconds || 0,
-        active_seconds_buffer: 0,
-        breaks: Array.isArray(s.breaks) ? s.breaks.map((b: any) => ({
-          id: b.id,
-          session_id: b.session_id,
-          start_time: b.start_time,
-          end_time: b.end_time,
-          duration_minutes: b.duration_minutes || 0,
-          reason: b.reason || 'Break'
-        })) : []
-      }))
+      const formattedSessions: TrackingSession[] = dbSessions.map((s: any) => {
+        let clockOut = s.clock_out
+        let status = s.status
+        let workedMinutes = s.worked_minutes
+
+        // If session belongs to a prior date and was left open in Supabase, finalize it at prior day boundary
+        if (s.session_date && s.session_date !== today && (!clockOut || status === 'working' || status === 'on_break')) {
+          const priorBounds = getKolkataDayBounds(s.session_date)
+          const closeIso = s.last_heartbeat || new Date(priorBounds.dayEndMs - 1).toISOString()
+          clockOut = closeIso
+          status = 'completed'
+          const cIn = new Date(s.clock_in).getTime()
+          const cOut = new Date(closeIso).getTime()
+          let bMs = 0
+          if (Array.isArray(s.breaks)) {
+            for (const b of s.breaks) {
+              if (b.end_time) {
+                bMs += Math.max(0, new Date(b.end_time).getTime() - new Date(b.start_time).getTime())
+              }
+            }
+          }
+          const suspMs = (s.suspended_seconds || 0) * 1000
+          workedMinutes = Math.max(0, Math.floor((cOut - cIn - bMs - suspMs) / 60000))
+
+          storage.enqueuePending({
+            id: `session-${s.id}`,
+            type: 'session',
+            employee_id: employeeId,
+            data: {
+              ...s,
+              clock_out: clockOut,
+              status,
+              worked_minutes: workedMinutes
+            },
+            createdAt: closeIso,
+            retries: 0
+          }, employeeId)
+        }
+
+        return {
+          id: s.id,
+          employee_id: s.employee_id,
+          session_date: s.session_date,
+          clock_in: s.clock_in,
+          clock_out: clockOut,
+          status,
+          worked_minutes: workedMinutes,
+          active_minutes: s.active_minutes || 0,
+          suspended_seconds: s.suspended_seconds || 0,
+          active_seconds_buffer: 0,
+          breaks: Array.isArray(s.breaks) ? s.breaks.map((b: any) => ({
+            id: b.id,
+            session_id: b.session_id,
+            start_time: b.start_time,
+            end_time: b.end_time || (s.session_date !== today ? clockOut : null),
+            duration_minutes: b.duration_minutes || 0,
+            reason: b.reason || 'Break'
+          })) : []
+        }
+      })
 
       // If local session is active, ensure it is preserved in todaySessions list
       if (isLocalActive && localSession && !formattedSessions.some(s => s.id === localSession.id)) {

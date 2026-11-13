@@ -205,6 +205,15 @@ class ActivityTracker {
       return
     }
 
+    // 1. Day Rollover check at the beginning of tick
+    const today = storage.getTodayBusinessDate()
+    if (!this.currentBusinessDate) {
+      this.currentBusinessDate = today
+    } else if (this.currentBusinessDate !== today) {
+      this.handleDayRollover(this.currentBusinessDate, today)
+      return
+    }
+
     const session = storage.getCurrentSession(user.id)
     if (!session) {
       this.activeSecondsBuffer = 0
@@ -219,13 +228,6 @@ class ActivityTracker {
       this.emitState()
       return
     }
-
-    const today = storage.getTodayBusinessDate()
-    if (this.currentBusinessDate && this.currentBusinessDate !== today) {
-      this.handleDayRollover(this.currentBusinessDate, today)
-      return
-    }
-    this.currentBusinessDate = today
 
     const settings = storage.getSettings()
     const idleSeconds = powerMonitor.getSystemIdleTime()
@@ -624,7 +626,8 @@ class ActivityTracker {
     console.log(`[ActivityTracker] Day rollover detected (${previousDay} -> ${newDay}). Resetting day.`)
     const user = storage.getCurrentUser()
     if (user) {
-      const session = storage.getCurrentSession(user.id)
+      const store = storage.getEmployeeData(user.id)
+      const session = store.currentSession
       if (session && !session.clock_out && session.status !== 'completed' && session.status !== 'Completed') {
         const { dayEndMs } = getKolkataDayBounds(previousDay)
         const closeIso = new Date(dayEndMs - 1).toISOString()
@@ -650,8 +653,7 @@ class ActivityTracker {
         const finalWorkedMs = Math.max(0, dayEndMs - clockInTime - totalBreakMs - suspendedMs)
         session.worked_minutes = Math.floor(finalWorkedMs / 60000)
 
-        storage.setCurrentSession(null, user.id)
-        const store = storage.getEmployeeData(user.id)
+        store.currentSession = null
         const idx = store.todaySessions.findIndex(s => s.id === session.id)
         if (idx !== -1) {
           store.todaySessions[idx] = session
@@ -669,6 +671,46 @@ class ActivityTracker {
         }, user.id)
 
         storage.flush()
+      }
+
+      // Also ensure any open sessions in history belonging to previousDay are finalized
+      if (Array.isArray(store.todaySessions)) {
+        let changed = false
+        for (const s of store.todaySessions) {
+          if (s.session_date === previousDay && (!s.clock_out || s.status === 'working' || s.status === 'on_break')) {
+            const { dayEndMs } = getKolkataDayBounds(previousDay)
+            const closeIso = s.last_heartbeat || new Date(dayEndMs - 1).toISOString()
+            s.clock_out = closeIso
+            s.status = 'completed'
+            const clockInTime = new Date(s.clock_in).getTime()
+            const clockOutTime = new Date(closeIso).getTime()
+            let totalBreakMs = 0
+            if (Array.isArray(s.breaks)) {
+              for (const b of s.breaks) {
+                if (b.end_time === null) {
+                  b.end_time = closeIso
+                }
+                if (b.end_time) {
+                  totalBreakMs += Math.max(0, new Date(b.end_time).getTime() - new Date(b.start_time).getTime())
+                }
+              }
+            }
+            const suspendedMs = (s.suspended_seconds || 0) * 1000
+            s.worked_minutes = Math.max(0, Math.floor((clockOutTime - clockInTime - totalBreakMs - suspendedMs) / 60000))
+            storage.enqueuePending({
+              id: `session-${s.id}`,
+              type: 'session',
+              employee_id: user.id,
+              data: s,
+              createdAt: closeIso,
+              retries: 0
+            }, user.id)
+            changed = true
+          }
+        }
+        if (changed) {
+          storage.flush()
+        }
       }
     }
 

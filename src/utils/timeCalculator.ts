@@ -124,6 +124,15 @@ export function calculateSessionWorkedMsForDate(
   } else if (isBreak) {
     const openBreak = session.breaks?.find(b => b.end_time === null)
     sessionEffectiveEndMs = openBreak ? new Date(openBreak.start_time).getTime() : nowMs
+  } else if (
+    session.last_heartbeat &&
+    new Date(session.last_heartbeat).getTime() < dayStartMs &&
+    nowMs - new Date(session.last_heartbeat).getTime() > 5 * 60 * 1000
+  ) {
+    // The session's last activity was on a previous day and offline for >5m (PC shutdown/sleep/closed).
+    // Finalize at last heartbeat (or prior day boundary) so it does NOT leak into targetDate.
+    const priorDayBounds = getKolkataDayBounds(session.session_date || clockInMs)
+    sessionEffectiveEndMs = Math.min(new Date(session.last_heartbeat).getTime(), priorDayBounds.dayEndMs)
   } else if (nowMs - clockInMs > 24 * 60 * 60 * 1000) {
     // Stale unclosed session older than 24h cannot extend into current date
     const priorDayBounds = getKolkataDayBounds(session.session_date || clockInMs)
