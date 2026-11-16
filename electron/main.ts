@@ -5,7 +5,8 @@ import { storage } from './storage'
 import { activityTracker } from './activity-tracker'
 import { supabaseService } from './supabase-service'
 import { screenshotService } from './screenshot-service'
-import type { AppSettings } from '../src/types'
+import type { AppSettings, ResetTimeParams, TimeResetAuditRecord } from '../src/types'
+import { calculateSessionWorkedSeconds } from '../src/utils/timeCalculator'
 
 let mainWindow: BrowserWindow | null = null
 let tray: Tray | null = null
@@ -304,6 +305,105 @@ ipcMain.handle('tracker:clock-out', async () => {
     return { success: true, session }
   }
   return { success: false, error: 'Cannot clock out: no session' }
+})
+
+let isResetInProgress = false
+
+ipcMain.handle('tracker:reset-time', async (_event, params: ResetTimeParams) => {
+  const user = storage.getCurrentUser()
+  if (!user || !user.id) {
+    return { success: false, error: 'Authentication required: Please sign in to reset time' }
+  }
+
+  if (isResetInProgress) {
+    return { success: false, error: 'Reset operation is already in progress' }
+  }
+
+  isResetInProgress = true
+
+  try {
+    // 1. Accidental Reset Protection: Explicit keyword verification
+    if (!params.confirmationText || params.confirmationText.trim() !== 'RESET') {
+      return {
+        success: false,
+        error: 'Confirmation failed: You must type RESET in uppercase to confirm resetting time.'
+      }
+    }
+
+    // 2. Audit Logging requirement: Reason is mandatory
+    if (!params.reason || !params.reason.trim()) {
+      return {
+        success: false,
+        error: 'A reason is mandatory for audit logging before resetting time.'
+      }
+    }
+
+    const validResetTypes = ['restart_session', 'discard_session']
+    const resetType = (params.resetType || 'restart_session') as 'restart_session' | 'discard_session'
+    if (!validResetTypes.includes(resetType)) {
+      return { success: false, error: 'Invalid reset type specified.' }
+    }
+
+    // 3. Active Session Check (cannot reset if no active session or already completed)
+    const currentSession = storage.getCurrentSession(user.id)
+    if (!currentSession || !currentSession.id || currentSession.employee_id !== user.id) {
+      return { success: false, error: 'No active session found to reset. Historical completed sessions cannot be reset.' }
+    }
+
+    if (currentSession.clock_out || currentSession.status === 'completed' || currentSession.status === 'Completed') {
+      return { success: false, error: 'Cannot reset an already completed session.' }
+    }
+
+    // 4. Capture accurate pre-reset metrics for audit log
+    const now = Date.now()
+    const previousWorkedSeconds = Math.max(
+      (currentSession.worked_minutes || 0) * 60,
+      calculateSessionWorkedSeconds(currentSession, now)
+    )
+    const previousActiveSeconds = (currentSession.active_minutes * 60) + (currentSession.active_seconds_buffer || 0)
+
+    const auditRecord: TimeResetAuditRecord = {
+      id: crypto.randomUUID(),
+      session_id: currentSession.id,
+      employee_id: user.id,
+      employee_email: user.email,
+      employee_name: [user.first_name, user.last_name].filter(Boolean).join(' ') || 'Employee',
+      reset_type: resetType,
+      previous_clock_in: currentSession.clock_in,
+      previous_worked_minutes: currentSession.worked_minutes,
+      previous_worked_seconds: previousWorkedSeconds,
+      previous_active_minutes: currentSession.active_minutes,
+      previous_active_seconds: previousActiveSeconds,
+      previous_status: currentSession.status,
+      reason: params.reason.trim(),
+      notes: params.notes ? params.notes.trim().slice(0, 500) : undefined,
+      reset_by: user.id,
+      reset_by_role: user.role || 'Employee',
+      created_at: new Date().toISOString()
+    }
+
+    // 5. Perform accurate session reset
+    const { session: updatedSession } = activityTracker.resetTime(user.id, resetType)
+
+    // 6. Record audit log and synchronize with database
+    await supabaseService.recordResetAudit(auditRecord)
+    await supabaseService.syncResetSession(updatedSession, currentSession.id, user.id)
+
+    return {
+      success: true,
+      session: updatedSession,
+      auditRecord
+    }
+  } catch (err: any) {
+    console.error('[Tracker] Error in tracker:reset-time:', err)
+    return { success: false, error: err.message || 'Failed to reset time' }
+  } finally {
+    isResetInProgress = false
+  }
+})
+
+ipcMain.handle('tracker:get-reset-audit-logs', async (_event, employeeId?: string) => {
+  return await supabaseService.getResetAuditLogs(employeeId)
 })
 
 ipcMain.handle('tracker:sync', async () => {

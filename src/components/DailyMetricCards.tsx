@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useRef } from 'react'
+import React, { useEffect, useRef, useState } from 'react'
 import type { TrackingSession, TrackingStatus } from '../types'
 import {
   calculateDailyWorkedSeconds,
@@ -12,6 +12,9 @@ interface DailyMetricCardsProps {
   status: TrackingStatus
   backendWorkedSeconds?: number
   backendActiveSeconds?: number
+  serverTimestamp?: number
+  isTrackingActive?: boolean
+  isIdle?: boolean
 }
 
 export const DailyMetricCards: React.FC<DailyMetricCardsProps> = React.memo(({
@@ -19,49 +22,115 @@ export const DailyMetricCards: React.FC<DailyMetricCardsProps> = React.memo(({
   todaySessions = [],
   status,
   backendWorkedSeconds,
-  backendActiveSeconds
+  backendActiveSeconds,
+  serverTimestamp,
+  isTrackingActive,
+  isIdle
 }) => {
-  const [workedSeconds, setWorkedSeconds] = useState<number>(() => backendWorkedSeconds ?? 0)
-  const [activeSeconds, setActiveSeconds] = useState<number>(() => backendActiveSeconds ?? 0)
+  const [displayedWorkedSeconds, setDisplayedWorkedSeconds] = useState<number>(() => backendWorkedSeconds ?? 0)
+  const [displayedActiveSeconds, setDisplayedActiveSeconds] = useState<number>(() => backendActiveSeconds ?? 0)
 
-  // Immediately synchronize when backend authoritative seconds update
+  const isWorking = (status === 'working' || status === 'Working') && !currentSession?.breaks?.some(b => b.end_time === null)
+  const activelyTracking = isTrackingActive !== undefined
+    ? isTrackingActive
+    : Boolean(isWorking && !isIdle)
+
+  const baselineRef = useRef<{
+    serverTimestamp: number
+    workedSeconds: number
+    activeSeconds: number
+    isWorking: boolean
+    isTrackingActive: boolean
+    sessionId: string | null
+    status: TrackingStatus
+  }>({
+    serverTimestamp: serverTimestamp || Date.now(),
+    workedSeconds: backendWorkedSeconds ?? 0,
+    activeSeconds: backendActiveSeconds ?? 0,
+    isWorking,
+    isTrackingActive: activelyTracking,
+    sessionId: currentSession?.id || null,
+    status
+  })
+
+  // Synchronize baseline with latest authoritative backend snapshot
   useEffect(() => {
-    if (backendWorkedSeconds !== undefined) {
-      setWorkedSeconds(backendWorkedSeconds)
+    const prevSessionId = baselineRef.current.sessionId
+    const currentSessionId = currentSession?.id || null
+
+    baselineRef.current = {
+      serverTimestamp: serverTimestamp || Date.now(),
+      workedSeconds: backendWorkedSeconds ?? 0,
+      activeSeconds: backendActiveSeconds ?? 0,
+      isWorking,
+      isTrackingActive: activelyTracking,
+      sessionId: currentSessionId,
+      status
     }
-  }, [backendWorkedSeconds])
 
-  useEffect(() => {
-    if (backendActiveSeconds !== undefined) {
-      setActiveSeconds(backendActiveSeconds)
+    // Immediately reset counters if session changed or was discarded/restarted
+    if (prevSessionId !== currentSessionId || (backendWorkedSeconds === 0 && displayedWorkedSeconds > 60)) {
+      setDisplayedWorkedSeconds(backendWorkedSeconds ?? 0)
+      setDisplayedActiveSeconds(backendActiveSeconds ?? 0)
     }
-  }, [backendActiveSeconds])
+  }, [backendWorkedSeconds, backendActiveSeconds, serverTimestamp, status, isWorking, activelyTracking, currentSession?.id])
 
-  // Continuous real-time smooth display
+  // High-precision synchronization loop (every 100ms) for strictly monotonic single-second cadence
   useEffect(() => {
-    const isWorking = status === 'working' || status === 'Working'
-
-    // If running in browser mode without Electron backend stream
+    // In web preview mode (without Electron backend stream), compute locally
     if (backendWorkedSeconds === undefined) {
       const updateMetrics = () => {
         const now = Date.now()
-        setWorkedSeconds(calculateDailyWorkedSeconds(currentSession, todaySessions, undefined, now))
-        setActiveSeconds(calculateDailyActiveSeconds(currentSession, todaySessions, undefined, now))
+        setDisplayedWorkedSeconds(calculateDailyWorkedSeconds(currentSession, todaySessions, undefined, now))
+        setDisplayedActiveSeconds(calculateDailyActiveSeconds(currentSession, todaySessions, undefined, now))
       }
       updateMetrics()
       const interval = setInterval(updateMetrics, 1000)
       return () => clearInterval(interval)
     }
 
-    // In desktop mode: smoothly advance seconds locally between 1-second backend ticks
-    if (isWorking) {
-      const interval = setInterval(() => {
-        setWorkedSeconds((prev) => prev + 1)
-        setActiveSeconds((prev) => prev + 1)
-      }, 1000)
-      return () => clearInterval(interval)
+    // Desktop mode: Authoritative backend baseline + high-precision elapsed interpolation
+    const updateInterpolation = () => {
+      const now = Date.now()
+      const base = baselineRef.current
+
+      // If not clocked in or completed, freeze at baseline
+      if (!base.sessionId || (base.status !== 'working' && base.status !== 'Working' && base.status !== 'on_break' && base.status !== 'On Break')) {
+        setDisplayedWorkedSeconds(base.workedSeconds)
+        setDisplayedActiveSeconds(base.activeSeconds)
+        return
+      }
+
+      // Elapsed seconds since the backend snapshot was captured
+      const elapsedSec = Math.max(0, Math.floor((now - base.serverTimestamp) / 1000))
+
+      // Worked hours advances only if currently working (freezes on break)
+      const targetWorked = base.isWorking ? (base.workedSeconds + elapsedSec) : base.workedSeconds
+
+      // Active hours advances only if actively tracking (freezes when idle or on break)
+      const targetActive = base.isTrackingActive ? (base.activeSeconds + elapsedSec) : base.activeSeconds
+
+      setDisplayedWorkedSeconds((prev) => {
+        // Allow downward reset on day rollover or explicit session reset
+        if (targetWorked < prev && (prev - targetWorked) > 60) {
+          return targetWorked
+        }
+        return Math.max(prev, targetWorked)
+      })
+
+      setDisplayedActiveSeconds((prev) => {
+        // Allow downward reset on day rollover or explicit session reset
+        if (targetActive < prev && (prev - targetActive) > 60) {
+          return targetActive
+        }
+        return Math.max(prev, targetActive)
+      })
     }
-  }, [status, backendWorkedSeconds, currentSession, todaySessions])
+
+    updateInterpolation()
+    const interval = setInterval(updateInterpolation, 100)
+    return () => clearInterval(interval)
+  }, [backendWorkedSeconds, backendActiveSeconds, currentSession, todaySessions])
 
   return (
     <div className="w-full max-w-md px-6 select-none font-sans">
@@ -84,7 +153,7 @@ export const DailyMetricCards: React.FC<DailyMetricCardsProps> = React.memo(({
             className="text-xl font-extrabold font-mono tracking-tight"
             style={{ color: 'var(--text-primary)' }}
           >
-            {formatSecondsToHHMMSS(workedSeconds)}
+            {formatSecondsToHHMMSS(displayedWorkedSeconds)}
           </span>
         </div>
 
@@ -106,7 +175,7 @@ export const DailyMetricCards: React.FC<DailyMetricCardsProps> = React.memo(({
             className="text-xl font-extrabold font-mono tracking-tight"
             style={{ color: 'var(--text-primary)' }}
           >
-            {formatSecondsToHHMMSS(activeSeconds)}
+            {formatSecondsToHHMMSS(displayedActiveSeconds)}
           </span>
         </div>
       </div>

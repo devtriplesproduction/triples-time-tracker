@@ -14,7 +14,7 @@ import { HelpModal } from './components/HelpModal'
 import { AdminScreenshotsModal } from './components/AdminScreenshotsModal'
 import { WebLandingScreen } from './components/WebLandingScreen'
 import { Monitor } from 'lucide-react'
-import { getKolkataDateString } from './utils/timeCalculator'
+import { getKolkataDateString, getDateString } from './utils/timeCalculator'
 import type {
   TrackingState,
   TrackingStatus,
@@ -33,6 +33,9 @@ export const App: React.FC = () => {
   const [todayActiveMinutes, setTodayActiveMinutes] = useState<number>(0)
   const [todayWorkedSeconds, setTodayWorkedSeconds] = useState<number>(0)
   const [todayActiveSeconds, setTodayActiveSeconds] = useState<number>(0)
+  const [serverTimestamp, setServerTimestamp] = useState<number>(Date.now())
+  const [isIdle, setIsIdle] = useState<boolean>(false)
+  const [isTrackingActive, setIsTrackingActive] = useState<boolean>(false)
   const [pendingSyncCount, setPendingSyncCount] = useState<number>(0)
   const [isOnline, setIsOnline] = useState<boolean>(true)
   const [user, setUser] = useState<UserProfile | null>(null)
@@ -47,12 +50,13 @@ export const App: React.FC = () => {
   // Synchronous ref to prevent stale closures in IPC event listeners
   const userRef = useRef<UserProfile | null>(null)
   const applyStateRef = useRef<(state: TrackingState, currentUserOverride?: UserProfile | null) => void>(() => {})
-  const currentBusinessDateRef = useRef<string>(getKolkataDateString())
+  const currentBusinessDateRef = useRef<string>(getDateString(undefined, settings.timezone || 'Asia/Kolkata'))
 
   // Periodically check for midnight date rollover in the renderer
   useEffect(() => {
     const checkDayRollover = () => {
-      const today = getKolkataDateString()
+      const tz = settings.timezone || 'Asia/Kolkata'
+      const today = getDateString(undefined, tz)
       if (currentBusinessDateRef.current && currentBusinessDateRef.current !== today) {
         console.log(`[App] Day rollover detected (${currentBusinessDateRef.current} -> ${today}). Resetting daily state.`)
         currentBusinessDateRef.current = today
@@ -78,7 +82,7 @@ export const App: React.FC = () => {
 
     const interval = setInterval(checkDayRollover, 10000)
     return () => clearInterval(interval)
-  }, [])
+  }, [settings.timezone])
 
   // Modals state
   const [isSettingsOpen, setIsSettingsOpen] = useState<boolean>(false)
@@ -112,6 +116,9 @@ export const App: React.FC = () => {
       setTodayActiveMinutes(0)
       setTodayWorkedSeconds(0)
       setTodayActiveSeconds(0)
+      setServerTimestamp(Date.now())
+      setIsIdle(false)
+      setIsTrackingActive(false)
       setPendingSyncCount(0)
       return
     }
@@ -155,6 +162,12 @@ export const App: React.FC = () => {
     const calcActiveSec = state.todayActiveSeconds ?? (state.todayActiveMinutes * 60)
     setTodayWorkedSeconds((prev) => (prev === calcWorkedSec ? prev : calcWorkedSec))
     setTodayActiveSeconds((prev) => (prev === calcActiveSec ? prev : calcActiveSec))
+    setServerTimestamp((prev) => (state.serverTimestamp && state.serverTimestamp !== prev ? state.serverTimestamp : prev))
+    setIsIdle((prev) => (state.isIdle !== undefined && state.isIdle !== prev ? state.isIdle : prev))
+    const calcIsActive = state.isTrackingActive !== undefined
+      ? state.isTrackingActive
+      : Boolean(targetStatus === 'working' && !state.isIdle)
+    setIsTrackingActive((prev) => (prev !== calcIsActive ? calcIsActive : prev))
 
     if (state.todaySessions) {
       const todayStr = getKolkataDateString()
@@ -526,6 +539,9 @@ export const App: React.FC = () => {
     setTodayActiveMinutes(0)
     setTodayWorkedSeconds(0)
     setTodayActiveSeconds(0)
+    setServerTimestamp(Date.now())
+    setIsIdle(false)
+    setIsTrackingActive(false)
     setPendingSyncCount(0)
     setAuthError(null)
     setIsSettingsOpen(false)
@@ -607,6 +623,7 @@ export const App: React.FC = () => {
       {/* 2. Top Application Header (TRIPLES PRODUCTION + User Avatar) */}
       <AppHeader
         user={user}
+        hasActiveSession={Boolean(currentSession && !currentSession.clock_out && currentSession.status !== 'completed' && currentSession.status !== 'Completed')}
         onOpenBugReport={() => setIsBugReportOpen(true)}
         onOpenSettings={() => setIsSettingsOpen(true)}
         onOpenScreenshots={() => setIsScreenshotsOpen(true)}
@@ -709,6 +726,9 @@ export const App: React.FC = () => {
                 status={status}
                 backendWorkedSeconds={todayWorkedSeconds}
                 backendActiveSeconds={todayActiveSeconds}
+                serverTimestamp={serverTimestamp}
+                isTrackingActive={isTrackingActive}
+                isIdle={isIdle}
               />
             </div>
           </div>
@@ -749,6 +769,9 @@ export const App: React.FC = () => {
           setTodayActiveMinutes(0)
           setTodayWorkedSeconds(0)
           setTodayActiveSeconds(0)
+          setServerTimestamp(Date.now())
+          setIsIdle(false)
+          setIsTrackingActive(false)
           setPendingSyncCount(0)
           setSyncError(null)
           setAuthError(null)

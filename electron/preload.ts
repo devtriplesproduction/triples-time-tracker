@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer } from 'electron'
-import type { ElectronAPI, TrackingState, AppSettings, ScreenshotRecord } from '../src/types'
+import type { ElectronAPI, TrackingState, AppSettings, ScreenshotRecord, ResetTimeParams } from '../src/types'
 
 const api: ElectronAPI = {
   minimizeWindow: () => ipcRenderer.send('window:minimize'),
@@ -11,6 +11,8 @@ const api: ElectronAPI = {
   takeBreak: (reason?: string) => ipcRenderer.invoke('tracker:take-break', reason),
   resumeBreak: () => ipcRenderer.invoke('tracker:resume'),
   clockOut: () => ipcRenderer.invoke('tracker:clock-out'),
+  resetTime: (params: ResetTimeParams) => ipcRenderer.invoke('tracker:reset-time', params),
+  getResetAuditLogs: (employeeId?: string) => ipcRenderer.invoke('tracker:get-reset-audit-logs', employeeId),
   syncWithERP: () => ipcRenderer.invoke('tracker:sync'),
   syncSessions: () => ipcRenderer.invoke('tracker:sync-sessions'),
   initSession: () => ipcRenderer.invoke('auth:init-session'),

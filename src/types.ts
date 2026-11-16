@@ -66,11 +66,40 @@ export interface ScreenshotRecord {
 
 export interface PendingSyncItem {
   id: string
-  type: 'session' | 'break' | 'activity' | 'screenshot'
+  type: 'session' | 'break' | 'activity' | 'screenshot' | 'leave' | 'bug' | 'reset_audit'
   employee_id?: string
   data: any
   createdAt: string
   retries: number
+}
+
+export type TimeResetType = 'automatic_daily_reset' | 'restart_session' | 'discard_session'
+
+export interface TimeResetAuditRecord {
+  id: string
+  session_id: string
+  employee_id: string
+  employee_email: string
+  employee_name?: string
+  reset_type: TimeResetType
+  previous_clock_in: string
+  previous_worked_minutes: number
+  previous_worked_seconds: number
+  previous_active_minutes: number
+  previous_active_seconds: number
+  previous_status: TrackingStatus
+  reason: string
+  notes?: string
+  reset_by: string
+  reset_by_role?: string
+  created_at: string
+}
+
+export interface ResetTimeParams {
+  resetType: TimeResetType
+  reason: string
+  notes?: string
+  confirmationText?: string
 }
 
 export interface TrackingState {
@@ -89,6 +118,11 @@ export interface TrackingState {
   lastSyncedAt: string | null
   pendingSyncCount?: number
   syncError?: string | null
+  serverTimestamp?: number
+  sessionClockInMs?: number | null
+  totalBreakMs?: number
+  suspendedMs?: number
+  isTrackingActive?: boolean
 }
 
 export interface AppSettings {
@@ -120,6 +154,8 @@ export interface ElectronAPI {
   openExternal?: (url: string) => Promise<void>
   submitBugReport?: (report: { title: string; description: string }) => Promise<{ success: boolean; error?: string }>
   applyLeave?: (leave: { leaveType: string; startDate: string; endDate: string; reason: string }) => Promise<{ success: boolean; error?: string }>
+  resetTime?: (params: ResetTimeParams) => Promise<{ success: boolean; session?: TrackingSession | null; auditRecord?: TimeResetAuditRecord; error?: string }>
+  getResetAuditLogs?: (employeeId?: string) => Promise<{ success: boolean; logs?: TimeResetAuditRecord[]; error?: string }>
   onStateUpdate: (callback: (state: TrackingState) => void) => () => void
 
   // Screenshot and Admin methods

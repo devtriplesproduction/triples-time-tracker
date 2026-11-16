@@ -5,6 +5,7 @@ import logoImg from '../assets/logo.png'
 
 interface AppHeaderProps {
   user: UserProfile | null
+  hasActiveSession?: boolean
   onOpenBugReport: () => void
   onOpenSettings: () => void
   onSignOut: () => void
@@ -14,6 +15,7 @@ interface AppHeaderProps {
 
 export const AppHeader: React.FC<AppHeaderProps> = React.memo(({
   user,
+  hasActiveSession,
   onOpenBugReport,
   onOpenSettings,
   onSignOut,

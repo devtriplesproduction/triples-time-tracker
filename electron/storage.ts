@@ -2,7 +2,8 @@ import fs from 'fs'
 import path from 'path'
 import crypto from 'crypto'
 import { app, safeStorage } from 'electron'
-import type { TrackingSession, ActivityInterval, UserProfile, AppSettings, PendingSyncItem } from '../src/types'
+import type { TrackingSession, ActivityInterval, UserProfile, AppSettings, PendingSyncItem, TimeResetAuditRecord } from '../src/types'
+import { getDayBounds } from '../src/utils/timeCalculator'
 
 export interface EmployeeStore {
   currentSession: TrackingSession | null
@@ -10,6 +11,8 @@ export interface EmployeeStore {
   activityLogs: ActivityInterval[]
   pendingSyncQueue: PendingSyncItem[]
   lastSyncedAt: string | null
+  resetAuditLogs?: TimeResetAuditRecord[]
+  lastRolloverDate?: string | null
 }
 
 export interface StorageData {
@@ -84,7 +87,9 @@ class TrackerStorage {
     const today = this.getTodayBusinessDate()
     if (session.session_date && session.session_date !== today) {
       console.log(`[Storage] Session ${session.id} belongs to a previous date (${session.session_date} vs today ${today}). Finalizing at day boundary.`)
-      const closeTime = session.last_heartbeat || `${session.session_date}T23:59:59.999+05:30`
+      const tz = this.data?.settings?.timezone || 'Asia/Kolkata'
+      const { dayEndMs } = getDayBounds(session.session_date, tz)
+      const closeTime = session.last_heartbeat || new Date(dayEndMs - 1).toISOString()
       if (Array.isArray(session.breaks)) {
         for (const b of session.breaks) {
           if (b.end_time === null) {
@@ -378,7 +383,7 @@ class TrackerStorage {
             ...DEFAULT_SETTINGS,
             ...(parsed.settings || {}),
             idleThresholdSeconds: (parsed.settings && typeof parsed.settings.idleThresholdSeconds === 'number' && parsed.settings.idleThresholdSeconds > 0)
-              ? parsed.settings.idleThresholdSeconds
+              ? (parsed.settings.idleThresholdSeconds === 300 ? 60 : parsed.settings.idleThresholdSeconds)
               : 60
           }
         }
@@ -484,10 +489,108 @@ class TrackerStorage {
         todaySessions: [],
         activityLogs: [],
         pendingSyncQueue: [],
-        lastSyncedAt: null
+        lastSyncedAt: null,
+        resetAuditLogs: [],
+        lastRolloverDate: null
+      }
+    } else {
+      if (!this.data.employeeData[employeeId].resetAuditLogs) {
+        this.data.employeeData[employeeId].resetAuditLogs = []
+      }
+      if (this.data.employeeData[employeeId].lastRolloverDate === undefined) {
+        this.data.employeeData[employeeId].lastRolloverDate = null
       }
     }
     return this.data.employeeData[employeeId]
+  }
+
+  public getLastRolloverDate(employeeId?: string): string | null {
+    const empId = employeeId || this.data.currentUser?.id || this.data.activeEmployeeId
+    if (!empId || !this.data.employeeData[empId]) return null
+    return this.data.employeeData[empId].lastRolloverDate || null
+  }
+
+  public setLastRolloverDate(dateStr: string, employeeId?: string): void {
+    const empId = employeeId || this.data.currentUser?.id || this.data.activeEmployeeId
+    if (!empId) return
+    const store = this.getEmployeeData(empId)
+    store.lastRolloverDate = dateStr
+    this.flush()
+  }
+
+  public addResetAuditLog(log: TimeResetAuditRecord, employeeId?: string): void {
+    const empId = log.employee_id || employeeId || this.data.currentUser?.id || this.data.activeEmployeeId
+    if (!empId) return
+    const store = this.getEmployeeData(empId)
+    if (!store.resetAuditLogs) store.resetAuditLogs = []
+    store.resetAuditLogs.unshift(log)
+    if (store.resetAuditLogs.length > 100) {
+      store.resetAuditLogs = store.resetAuditLogs.slice(0, 100)
+    }
+    this.flush()
+  }
+
+  public getResetAuditLogs(employeeId?: string): TimeResetAuditRecord[] {
+    const empId = employeeId || this.data.currentUser?.id || this.data.activeEmployeeId
+    if (!empId || !this.data.employeeData[empId]) return []
+    return this.data.employeeData[empId].resetAuditLogs || []
+  }
+
+  public resetCurrentSession(
+    employeeId: string,
+    resetType: 'restart_session' | 'discard_session'
+  ): { session: TrackingSession | null; previousSession: TrackingSession } | null {
+    const empId = employeeId || this.data.currentUser?.id || this.data.activeEmployeeId
+    if (!empId) return null
+
+    const store = this.getEmployeeData(empId)
+    const session = store.currentSession
+    if (!session || session.clock_out || session.status === 'completed' || session.status === 'Completed') {
+      return null
+    }
+
+    const previousSession: TrackingSession = JSON.parse(JSON.stringify(session))
+    const nowIso = new Date().toISOString()
+
+    if (resetType === 'restart_session') {
+      session.clock_in = nowIso
+      session.clock_out = null
+      session.status = 'working'
+      session.worked_minutes = 0
+      session.active_minutes = 0
+      session.suspended_seconds = 0
+      session.active_seconds_buffer = 0
+      session.screenshot_seconds_buffer = 0
+      session.last_heartbeat = nowIso
+      session.breaks = []
+
+      store.currentSession = session
+      const idx = store.todaySessions.findIndex(s => s.id === session.id)
+      if (idx !== -1) {
+        store.todaySessions[idx] = session
+      } else {
+        store.todaySessions.push(session)
+      }
+    } else {
+      session.clock_out = session.clock_in
+      session.status = 'completed'
+      session.worked_minutes = 0
+      session.active_minutes = 0
+      session.suspended_seconds = 0
+      session.active_seconds_buffer = 0
+      session.screenshot_seconds_buffer = 0
+      session.last_heartbeat = session.clock_in
+      session.breaks = []
+
+      store.currentSession = null
+      const idx = store.todaySessions.findIndex(s => s.id === session.id)
+      if (idx !== -1) {
+        store.todaySessions.splice(idx, 1)
+      }
+    }
+
+    this.flush()
+    return { session: store.currentSession, previousSession }
   }
 
   private getMachineFallbackKey(): Buffer {
@@ -770,8 +873,10 @@ class TrackerStorage {
     if (!empId || !this.data.employeeData[empId]) return []
 
     const target = targetDate || this.getTodayBusinessDate()
-    const targetStartMs = new Date(`${target}T00:00:00+05:30`).getTime()
-    const targetEndMs = targetStartMs + 24 * 60 * 60 * 1000
+    const tz = this.data?.settings?.timezone || 'Asia/Kolkata'
+    const { dayStartMs, dayEndMs } = getDayBounds(target, tz)
+    const targetStartMs = dayStartMs
+    const targetEndMs = dayEndMs
 
     return this.data.employeeData[empId].todaySessions.filter(s => {
       if (s.employee_id !== empId) return false

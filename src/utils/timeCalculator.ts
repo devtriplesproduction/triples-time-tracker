@@ -1,15 +1,20 @@
 import type { TrackingSession, ActivityInterval, TrackingStatus } from '../types'
 
 /**
- * Asia/Kolkata timezone offset is fixed UTC+05:30 (19,800,000 ms, no DST).
+ * Default timezone is Asia/Kolkata (fixed UTC+05:30, 19,800,000 ms, no DST).
+ * Configurable per employee via AppSettings.timezone.
  */
+export const DEFAULT_TIMEZONE = 'Asia/Kolkata'
 export const KOLKATA_TIMEZONE = 'Asia/Kolkata'
 
 /**
  * Returns the calendar day boundaries (00:00:00.000 to 24:00:00.000) in ms
- * for a given date in Asia/Kolkata timezone.
+ * for a given date in the specified timezone (defaults to Asia/Kolkata).
  */
-export function getKolkataDayBounds(dateOrString?: string | Date | number): {
+export function getDayBounds(
+  dateOrString?: string | Date | number,
+  timeZone: string = DEFAULT_TIMEZONE
+): {
   dayStartMs: number
   dayEndMs: number
   dateString: string
@@ -21,39 +26,138 @@ export function getKolkataDayBounds(dateOrString?: string | Date | number): {
   } else {
     const d = dateOrString !== undefined ? new Date(dateOrString) : new Date()
     dateString = new Intl.DateTimeFormat('en-CA', {
-      timeZone: KOLKATA_TIMEZONE,
+      timeZone: timeZone || DEFAULT_TIMEZONE,
       year: 'numeric',
       month: '2-digit',
       day: '2-digit'
     }).format(d)
   }
 
-  // Exact start of the date in Asia/Kolkata
-  const dayStartMs = new Date(`${dateString}T00:00:00+05:30`).getTime()
-  const dayEndMs = dayStartMs + 24 * 60 * 60 * 1000
+  // Fast path for Asia/Kolkata (fixed +05:30 offset, 19,800,000 ms, no DST)
+  if (!timeZone || timeZone === 'Asia/Kolkata' || timeZone === 'Asia/Calcutta' || timeZone === 'IST') {
+    const dayStartMs = new Date(`${dateString}T00:00:00+05:30`).getTime()
+    return {
+      dayStartMs,
+      dayEndMs: dayStartMs + 24 * 60 * 60 * 1000,
+      dateString
+    }
+  }
 
-  return {
-    dayStartMs,
-    dayEndMs,
-    dateString
+  // For UTC
+  if (timeZone === 'UTC' || timeZone === 'Etc/UTC') {
+    const dayStartMs = new Date(`${dateString}T00:00:00Z`).getTime()
+    return {
+      dayStartMs,
+      dayEndMs: dayStartMs + 24 * 60 * 60 * 1000,
+      dateString
+    }
+  }
+
+  // General timezone support using Intl formatToParts
+  try {
+    const [y, m, d] = dateString.split('-').map(Number)
+    const utcGuess = Date.UTC(y, m - 1, d, 0, 0, 0)
+    const parts = new Intl.DateTimeFormat('en-US', {
+      timeZone,
+      year: 'numeric',
+      month: 'numeric',
+      day: 'numeric',
+      hour: 'numeric',
+      minute: 'numeric',
+      second: 'numeric',
+      hour12: false
+    }).formatToParts(new Date(utcGuess))
+
+    const pMap: Record<string, number> = {}
+    for (const p of parts) {
+      if (p.type !== 'literal') pMap[p.type] = parseInt(p.value, 10)
+    }
+
+    const localAtUtcGuess = Date.UTC(
+      pMap.year,
+      pMap.month - 1,
+      pMap.day,
+      pMap.hour % 24,
+      pMap.minute,
+      pMap.second
+    )
+    const offsetMs = localAtUtcGuess - utcGuess
+    const dayStartMs = utcGuess - offsetMs
+    return {
+      dayStartMs,
+      dayEndMs: dayStartMs + 24 * 60 * 60 * 1000,
+      dateString
+    }
+  } catch {
+    const dayStartMs = new Date(`${dateString}T00:00:00+05:30`).getTime()
+    return {
+      dayStartMs,
+      dayEndMs: dayStartMs + 24 * 60 * 60 * 1000,
+      dateString
+    }
   }
 }
 
 /**
- * Returns the current date string in Asia/Kolkata as YYYY-MM-DD.
+ * Backwards-compatible alias for Asia/Kolkata day bounds.
  */
-export function getKolkataDateString(dateOrMs?: Date | number): string {
-  const d = dateOrMs !== undefined ? new Date(dateOrMs) : new Date()
-  return new Intl.DateTimeFormat('en-CA', {
-    timeZone: KOLKATA_TIMEZONE,
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit'
-  }).format(d)
+export function getKolkataDayBounds(dateOrString?: string | Date | number): {
+  dayStartMs: number
+  dayEndMs: number
+  dateString: string
+} {
+  return getDayBounds(dateOrString, KOLKATA_TIMEZONE)
 }
 
 /**
- * Returns the hour (0-23) in Asia/Kolkata timezone.
+ * Returns the current date string in the target timezone as YYYY-MM-DD.
+ */
+export function getDateString(dateOrMs?: Date | number, timeZone: string = DEFAULT_TIMEZONE): string {
+  const d = dateOrMs !== undefined ? new Date(dateOrMs) : new Date()
+  try {
+    return new Intl.DateTimeFormat('en-CA', {
+      timeZone: timeZone || DEFAULT_TIMEZONE,
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit'
+    }).format(d)
+  } catch {
+    return new Intl.DateTimeFormat('en-CA', {
+      timeZone: KOLKATA_TIMEZONE,
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit'
+    }).format(d)
+  }
+}
+
+/**
+ * Backwards-compatible alias for Asia/Kolkata date string.
+ */
+export function getKolkataDateString(dateOrMs?: Date | number): string {
+  return getDateString(dateOrMs, KOLKATA_TIMEZONE)
+}
+
+/**
+ * Returns the hour (0-23) in the target timezone.
+ */
+export function getHour(dateOrMs?: Date | number, timeZone: string = DEFAULT_TIMEZONE): number {
+  const d = dateOrMs !== undefined ? new Date(dateOrMs) : new Date()
+  try {
+    const hourStr = new Intl.DateTimeFormat('en-US', {
+      timeZone: timeZone || DEFAULT_TIMEZONE,
+      hour: 'numeric',
+      hour12: false
+    }).format(d)
+    const hour = parseInt(hourStr, 10)
+    return hour % 24
+  } catch {
+    return getKolkataHour(dateOrMs)
+  }
+}
+
+/**
+ * Backwards-compatible alias for Asia/Kolkata hour.
  */
 export function getKolkataHour(dateOrMs?: Date | number): number {
   const d = dateOrMs !== undefined ? new Date(dateOrMs) : new Date()
@@ -67,17 +171,18 @@ export function getKolkataHour(dateOrMs?: Date | number): number {
 }
 
 /**
- * Returns greeting based on current time in Asia/Kolkata:
+ * Returns greeting based on current time in the specified timezone:
  * - 5:00 AM–11:59 AM: Good Morning
  * - 12:00 PM–4:59 PM: Good Afternoon
  * - 5:00 PM–8:59 PM: Good Evening
  * - 9:00 PM–4:59 AM: Good Night
  */
-export function getKolkataGreeting(
+export function getGreeting(
   dateOrMs: Date | number = Date.now(),
-  fullName?: string | null
+  fullName?: string | null,
+  timeZone: string = DEFAULT_TIMEZONE
 ): { greetingText: string; fullNameText: string; fullGreeting: string } {
-  const hour = getKolkataHour(dateOrMs)
+  const hour = getHour(dateOrMs, timeZone)
 
   let greetingText = 'Good Morning'
   if (hour >= 5 && hour < 12) {
@@ -102,17 +207,29 @@ export function getKolkataGreeting(
 }
 
 /**
+ * Backwards-compatible alias for Asia/Kolkata greeting.
+ */
+export function getKolkataGreeting(
+  dateOrMs: Date | number = Date.now(),
+  fullName?: string | null
+): { greetingText: string; fullNameText: string; fullGreeting: string } {
+  return getGreeting(dateOrMs, fullName, KOLKATA_TIMEZONE)
+}
+
+/**
  * Calculates the exact worked ms of a session that fall within target calendar date.
- * Splits sessions crossing midnight: only the portion within target date's 00:00:00 to 24:00:00 IST is counted.
+ * Splits sessions crossing midnight: only the portion within target date's 00:00:00 to 24:00:00 in specified timezone is counted.
  * Excludes breaks and system suspend intervals that fell within the target date.
  * If currently on break, freeze effective work at the start of open break.
+ * If interrupted by a PC crash, hard shutdown, or offline gap (>5m without heartbeat), caps at last heartbeat to prevent time inflation.
  */
 export function calculateSessionWorkedMsForDate(
   session: TrackingSession,
   targetDateStr: string,
-  nowMs: number = Date.now()
+  nowMs: number = Date.now(),
+  timeZone: string = DEFAULT_TIMEZONE
 ): number {
-  const { dayStartMs, dayEndMs } = getKolkataDayBounds(targetDateStr)
+  const { dayStartMs, dayEndMs } = getDayBounds(targetDateStr, timeZone)
   const clockInMs = new Date(session.clock_in).getTime()
 
   const isBreak = session.status === 'on_break' || session.status === 'On Break'
@@ -126,16 +243,16 @@ export function calculateSessionWorkedMsForDate(
     sessionEffectiveEndMs = openBreak ? new Date(openBreak.start_time).getTime() : nowMs
   } else if (
     session.last_heartbeat &&
-    new Date(session.last_heartbeat).getTime() < dayStartMs &&
     nowMs - new Date(session.last_heartbeat).getTime() > 5 * 60 * 1000
   ) {
-    // The session's last activity was on a previous day and offline for >5m (PC shutdown/sleep/closed).
-    // Finalize at last heartbeat (or prior day boundary) so it does NOT leak into targetDate.
-    const priorDayBounds = getKolkataDayBounds(session.session_date || clockInMs)
-    sessionEffectiveEndMs = Math.min(new Date(session.last_heartbeat).getTime(), priorDayBounds.dayEndMs)
+    // The session's last activity stopped >5m ago and was never clocked out (PC shutdown/crash/power loss).
+    // Finalize at last heartbeat (or prior day boundary) so offline downtime does NOT inflate worked hours.
+    const lastHbMs = new Date(session.last_heartbeat).getTime()
+    const priorDayBounds = getDayBounds(session.session_date || clockInMs, timeZone)
+    sessionEffectiveEndMs = Math.min(lastHbMs, priorDayBounds.dayEndMs)
   } else if (nowMs - clockInMs > 24 * 60 * 60 * 1000) {
     // Stale unclosed session older than 24h cannot extend into current date
-    const priorDayBounds = getKolkataDayBounds(session.session_date || clockInMs)
+    const priorDayBounds = getDayBounds(session.session_date || clockInMs, timeZone)
     sessionEffectiveEndMs = session.last_heartbeat
       ? Math.min(new Date(session.last_heartbeat).getTime(), priorDayBounds.dayEndMs)
       : priorDayBounds.dayEndMs
@@ -186,6 +303,7 @@ export function calculateSessionWorkedMsForDate(
  * - Pauses during break (frozen at the start of open break).
  * - Resumes upon Resume Work.
  * - Freezes upon Clock Out (at clock_out timestamp).
+ * - Prevents crash / abrupt shutdown inflation by freezing at last_heartbeat if offline >5m.
  * - Excludes all completed break durations.
  * - Excludes system suspend/sleep seconds.
  */
@@ -205,6 +323,12 @@ export function calculateSessionWorkedSeconds(
   } else if (isBreak) {
     const openBreak = session.breaks?.find(b => b.end_time === null)
     effectiveEndMs = openBreak ? new Date(openBreak.start_time).getTime() : nowMs
+  } else if (
+    session.last_heartbeat &&
+    nowMs - new Date(session.last_heartbeat).getTime() > 5 * 60 * 1000
+  ) {
+    // Abrupt shutdown / crash / app terminated without clock-out: freeze at last recorded heartbeat
+    effectiveEndMs = new Date(session.last_heartbeat).getTime()
   }
 
   if (effectiveEndMs <= clockInMs) return 0
@@ -233,9 +357,10 @@ export function calculateDailyWorkedSeconds(
   currentSession: TrackingSession | null,
   allSessions: TrackingSession[] = [],
   targetDateStr?: string,
-  nowMs: number = Date.now()
+  nowMs: number = Date.now(),
+  timeZone: string = DEFAULT_TIMEZONE
 ): number {
-  const { dateString } = getKolkataDayBounds(targetDateStr || new Date(nowMs))
+  const { dateString } = getDayBounds(targetDateStr || new Date(nowMs), timeZone)
 
   const sessionMap = new Map<string, TrackingSession>()
   for (const s of allSessions) {
@@ -249,7 +374,7 @@ export function calculateDailyWorkedSeconds(
 
   let totalMs = 0
   for (const session of sessionMap.values()) {
-    totalMs += calculateSessionWorkedMsForDate(session, dateString, nowMs)
+    totalMs += calculateSessionWorkedMsForDate(session, dateString, nowMs, timeZone)
   }
 
   // Max 24 hours = 86400 seconds
@@ -284,9 +409,10 @@ export function calculateDailyActiveSeconds(
   currentSession: TrackingSession | null,
   allSessions: TrackingSession[] = [],
   targetDateStr?: string,
-  nowMs: number = Date.now()
+  nowMs: number = Date.now(),
+  timeZone: string = DEFAULT_TIMEZONE
 ): number {
-  const { dateString } = getKolkataDayBounds(targetDateStr || new Date(nowMs))
+  const { dateString } = getDayBounds(targetDateStr || new Date(nowMs), timeZone)
 
   const sessionMap = new Map<string, TrackingSession>()
   for (const s of allSessions) {
@@ -304,7 +430,7 @@ export function calculateDailyActiveSeconds(
     if (session.session_date && session.session_date !== dateString) continue
 
     const workedSecondsOnDate = Math.floor(
-      calculateSessionWorkedMsForDate(session, dateString, nowMs) / 1000
+      calculateSessionWorkedMsForDate(session, dateString, nowMs, timeZone) / 1000
     )
     if (workedSecondsOnDate <= 0) continue
 

@@ -4,7 +4,7 @@ import fs from 'fs'
 import { storage } from './storage'
 import { activityTracker } from './activity-tracker'
 import { getKolkataDayBounds } from '../src/utils/timeCalculator'
-import type { UserProfile, TrackingSession, BreakRecord, ActivityInterval, PendingSyncItem, ScreenshotRecord } from '../src/types'
+import type { UserProfile, TrackingSession, BreakRecord, ActivityInterval, PendingSyncItem, ScreenshotRecord, TimeResetAuditRecord } from '../src/types'
 
 // Provide WebSocket implementation for Node.js / Electron main process
 if (typeof (globalThis as any).WebSocket === 'undefined') {
@@ -772,6 +772,29 @@ class SupabaseService {
           const { error } = await this.client.from('bug_reports').insert(item.data)
           if (!error) storage.removePending(item.id, empId)
           else item.retries += 1
+        } else if ((item.type as any) === 'reset_audit') {
+          const audit = item.data as TimeResetAuditRecord
+          const { error } = await this.client.from('time_reset_audit_logs').insert({
+            id: audit.id,
+            session_id: audit.session_id,
+            employee_id: empId,
+            employee_email: audit.employee_email,
+            employee_name: audit.employee_name || null,
+            reset_type: audit.reset_type,
+            previous_clock_in: audit.previous_clock_in,
+            previous_worked_minutes: audit.previous_worked_minutes,
+            previous_worked_seconds: audit.previous_worked_seconds,
+            previous_active_minutes: audit.previous_active_minutes,
+            previous_active_seconds: audit.previous_active_seconds,
+            previous_status: audit.previous_status,
+            reason: audit.reason,
+            notes: audit.notes || null,
+            reset_by: audit.reset_by,
+            reset_by_role: audit.reset_by_role || null,
+            created_at: audit.created_at
+          })
+          if (!error) storage.removePending(item.id, empId)
+          else item.retries += 1
         }
       }
     } catch (e) {
@@ -1010,6 +1033,213 @@ class SupabaseService {
     } catch (err: any) {
       console.error('[SupabaseService] applyLeave exception:', err)
       return { success: false, error: err.message || 'Failed to submit leave request' }
+    }
+  }
+
+  public async recordResetAudit(auditRecord: TimeResetAuditRecord): Promise<{ success: boolean; error?: string }> {
+    try {
+      const user = storage.getCurrentUser()
+      const empId = auditRecord.employee_id || user?.id
+      if (!empId) {
+        return { success: false, error: 'User not authenticated' }
+      }
+
+      // Save locally first
+      storage.addResetAuditLog(auditRecord, empId)
+
+      // Insert into Supabase table public.time_reset_audit_logs
+      const { error } = await this.client
+        .from('time_reset_audit_logs')
+        .insert({
+          id: auditRecord.id,
+          session_id: auditRecord.session_id,
+          employee_id: auditRecord.employee_id,
+          employee_email: auditRecord.employee_email,
+          employee_name: auditRecord.employee_name || null,
+          reset_type: auditRecord.reset_type,
+          previous_clock_in: auditRecord.previous_clock_in,
+          previous_worked_minutes: auditRecord.previous_worked_minutes,
+          previous_worked_seconds: auditRecord.previous_worked_seconds,
+          previous_active_minutes: auditRecord.previous_active_minutes,
+          previous_active_seconds: auditRecord.previous_active_seconds,
+          previous_status: auditRecord.previous_status,
+          reason: auditRecord.reason,
+          notes: auditRecord.notes || null,
+          reset_by: auditRecord.reset_by,
+          reset_by_role: auditRecord.reset_by_role || null,
+          created_at: auditRecord.created_at
+        })
+
+      if (error) {
+        console.warn('[SupabaseService] Remote time_reset_audit_logs insert notice (queuing offline):', error.message)
+        storage.enqueuePending({
+          id: `reset-audit-${auditRecord.id}`,
+          type: 'reset_audit' as any,
+          employee_id: empId,
+          data: auditRecord,
+          createdAt: auditRecord.created_at,
+          retries: 0
+        }, empId)
+        return { success: true }
+      }
+
+      return { success: true }
+    } catch (err: any) {
+      console.error('[SupabaseService] recordResetAudit exception:', err)
+      if (auditRecord.employee_id) {
+        storage.enqueuePending({
+          id: `reset-audit-${auditRecord.id}`,
+          type: 'reset_audit' as any,
+          employee_id: auditRecord.employee_id,
+          data: auditRecord,
+          createdAt: auditRecord.created_at,
+          retries: 0
+        }, auditRecord.employee_id)
+      }
+      return { success: false, error: err.message || 'Failed to record audit log' }
+    }
+  }
+
+  public async syncResetSession(
+    session: TrackingSession | null,
+    discardedSessionId?: string,
+    employeeId?: string
+  ): Promise<{ success: boolean; error?: string }> {
+    try {
+      const user = storage.getCurrentUser()
+      const empId = employeeId || session?.employee_id || user?.id
+      if (!empId) return { success: false, error: 'User not authenticated' }
+
+      if (session) {
+        // Session was restarted: upsert session with new clock_in and zero worked/active minutes
+        const statusToSave = 'working'
+        const { error: sessionError } = await this.client
+          .from('time_sessions')
+          .upsert({
+            id: session.id,
+            employee_id: empId,
+            session_date: session.session_date,
+            clock_in: session.clock_in,
+            clock_out: null,
+            status: statusToSave,
+            worked_minutes: 0,
+            active_minutes: 0,
+            suspended_seconds: 0,
+            updated_at: new Date().toISOString()
+          })
+
+        if (sessionError) {
+          console.warn('[SupabaseService] Error syncing reset session:', sessionError.message)
+          storage.enqueuePending({
+            id: `session-${session.id}`,
+            type: 'session',
+            employee_id: empId,
+            data: session,
+            createdAt: new Date().toISOString(),
+            retries: 0
+          }, empId)
+        } else {
+          storage.removePending(`session-${session.id}`, empId)
+        }
+
+        // Delete breaks for this session in Supabase since breaks were reset
+        try {
+          await this.client
+            .from('session_breaks')
+            .delete()
+            .eq('session_id', session.id)
+        } catch (e) {
+          console.warn('[SupabaseService] Notice deleting reset breaks:', e)
+        }
+
+        return { success: true }
+      } else if (discardedSessionId) {
+        // Session was discarded: mark completed with 0 worked_minutes and clock_out = clock_in
+        const { error: discardError } = await this.client
+          .from('time_sessions')
+          .update({
+            status: 'completed',
+            worked_minutes: 0,
+            active_minutes: 0,
+            clock_out: new Date().toISOString(),
+            updated_at: new Date().toISOString()
+          })
+          .eq('id', discardedSessionId)
+          .eq('employee_id', empId)
+
+        if (discardError) {
+          console.warn('[SupabaseService] Error marking discarded session in DB:', discardError.message)
+        }
+
+        try {
+          await this.client
+            .from('session_breaks')
+            .delete()
+            .eq('session_id', discardedSessionId)
+        } catch (_) {}
+
+        return { success: true }
+      }
+
+      return { success: true }
+    } catch (err: any) {
+      console.error('[SupabaseService] syncResetSession exception:', err)
+      return { success: false, error: err.message || 'Failed to sync reset session' }
+    }
+  }
+
+  public async getResetAuditLogs(employeeId?: string): Promise<{ success: boolean; logs?: TimeResetAuditRecord[]; error?: string }> {
+    try {
+      const user = storage.getCurrentUser()
+      const empId = employeeId || user?.id
+      if (!empId) {
+        return { success: false, error: 'User not authenticated' }
+      }
+
+      let query = this.client
+        .from('time_reset_audit_logs')
+        .select('*')
+        .order('created_at', { ascending: false })
+
+      const roleUpper = (user?.role || '').toUpperCase()
+      const isAdmin = roleUpper === 'ADMIN' || roleUpper === 'SUPER_ADMIN' || roleUpper === 'SUPER ADMIN' || roleUpper === 'HR'
+
+      if (!isAdmin || (employeeId && employeeId !== user?.id)) {
+        query = query.eq('employee_id', empId)
+      }
+
+      const { data, error } = await query
+
+      if (error) {
+        console.warn('[SupabaseService] Database query error for reset logs, falling back to local store:', error.message)
+        const localLogs = storage.getResetAuditLogs(empId)
+        return { success: true, logs: localLogs }
+      }
+
+      const logs: TimeResetAuditRecord[] = (data || []).map((row: any) => ({
+        id: row.id,
+        session_id: row.session_id,
+        employee_id: row.employee_id,
+        employee_email: row.employee_email,
+        employee_name: row.employee_name || undefined,
+        reset_type: row.reset_type,
+        previous_clock_in: row.previous_clock_in,
+        previous_worked_minutes: row.previous_worked_minutes,
+        previous_worked_seconds: row.previous_worked_seconds || (row.previous_worked_minutes * 60),
+        previous_active_minutes: row.previous_active_minutes,
+        previous_active_seconds: row.previous_active_seconds || (row.previous_active_minutes * 60),
+        previous_status: row.previous_status,
+        reason: row.reason,
+        notes: row.notes || undefined,
+        reset_by: row.reset_by,
+        reset_by_role: row.reset_by_role || undefined,
+        created_at: row.created_at
+      }))
+
+      return { success: true, logs }
+    } catch (err: any) {
+      const localLogs = storage.getResetAuditLogs(employeeId)
+      return { success: true, logs: localLogs }
     }
   }
 

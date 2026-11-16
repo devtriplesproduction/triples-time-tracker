@@ -1,6 +1,7 @@
 import React, { useState } from 'react'
-import { X, Sliders, RefreshCw, LogOut, Check } from 'lucide-react'
-import type { AppSettings, UserProfile } from '../types'
+import { X, Sliders, RefreshCw, LogOut, Check, History, ChevronDown, ChevronUp } from 'lucide-react'
+import type { AppSettings, UserProfile, TimeResetAuditRecord } from '../types'
+import { formatSecondsToHHMMSS } from '../utils/timeCalculator'
 
 interface SettingsModalProps {
   isOpen: boolean
@@ -27,6 +28,28 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   const [syncing, setSyncing] = useState(false)
   const [saved, setSaved] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [showAuditLogs, setShowAuditLogs] = useState<boolean>(false)
+  const [auditLogs, setAuditLogs] = useState<TimeResetAuditRecord[]>([])
+  const [loadingLogs, setLoadingLogs] = useState<boolean>(false)
+
+  const handleToggleAuditLogs = async () => {
+    if (!showAuditLogs) {
+      setShowAuditLogs(true)
+      if (window.electronAPI?.getResetAuditLogs) {
+        setLoadingLogs(true)
+        try {
+          const res = await window.electronAPI.getResetAuditLogs()
+          if (res.success && res.logs) {
+            setAuditLogs(res.logs)
+          }
+        } finally {
+          setLoadingLogs(false)
+        }
+      }
+    } else {
+      setShowAuditLogs(false)
+    }
+  }
 
   // Keep state in sync with props
   React.useEffect(() => {
@@ -220,6 +243,82 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
               onChange={(e) => setMinimizeToTray(e.target.checked)}
               className="w-4 h-4 rounded cursor-pointer accent-white"
             />
+          </div>
+
+          {/* Automatic Daily Time Reset & Audit Trail Section */}
+          <div className="pt-2 border-t" style={{ borderColor: 'var(--border-color)' }}>
+            <div className="mb-2">
+              <span className="font-semibold block">Automatic Daily Time Reset & Audit Trail</span>
+              <span className="text-[11px]" style={{ color: 'var(--text-secondary)' }}>
+                Worked and Active hours automatically reset to 00:00:00 at 12:00 AM midnight in your configured timezone ({timezone === 'Asia/Kolkata' ? 'IST' : timezone}). Previous-day totals are permanently archived to the audit log.
+              </span>
+            </div>
+
+            {/* View Audit Trail Collapsible */}
+            <div className="mt-1">
+              <button
+                type="button"
+                onClick={handleToggleAuditLogs}
+                className="w-full py-1.5 px-2.5 rounded-lg border flex items-center justify-between text-[11px] font-medium transition-colors hover:bg-white/5"
+                style={{ borderColor: 'var(--border-color)', color: 'var(--text-secondary)' }}
+              >
+                <div className="flex items-center gap-1.5">
+                  <History size={13} />
+                  <span>View Time Reset & Rollover Audit Logs</span>
+                </div>
+                {showAuditLogs ? <ChevronUp size={13} /> : <ChevronDown size={13} />}
+              </button>
+
+              {showAuditLogs && (
+                <div
+                  className="mt-2 p-2 rounded-xl border max-h-36 overflow-y-auto space-y-2 text-[11px]"
+                  style={{
+                    backgroundColor: 'var(--bg-surface-elevated)',
+                    borderColor: 'var(--border-color)'
+                  }}
+                >
+                  {loadingLogs ? (
+                    <div className="text-center py-2 text-neutral-400 animate-pulse">Loading audit logs...</div>
+                  ) : auditLogs.length === 0 ? (
+                    <div className="text-center py-2 text-neutral-400">No reset events recorded yet.</div>
+                  ) : (
+                    auditLogs.map((log) => (
+                      <div key={log.id} className="p-2 rounded-lg bg-black/20 border border-white/5 text-[10px]">
+                        <div className="flex items-center justify-between font-bold">
+                          <span className={
+                            log.reset_type === 'automatic_daily_reset'
+                              ? 'text-sky-400'
+                              : log.reset_type === 'discard_session'
+                              ? 'text-red-400'
+                              : 'text-amber-400'
+                          }>
+                            {log.reset_type === 'automatic_daily_reset'
+                              ? 'Daily Midnight Reset'
+                              : log.reset_type === 'discard_session'
+                              ? 'Session Discarded'
+                              : 'Session Restarted'}
+                          </span>
+                          <span className="text-neutral-400 font-mono">
+                            {new Date(log.created_at).toLocaleDateString()} {new Date(log.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                          </span>
+                        </div>
+                        <div className="mt-0.5 text-neutral-300">
+                          Archived Worked: <span className="font-mono text-emerald-300">{formatSecondsToHHMMSS(log.previous_worked_seconds)}</span>
+                          {log.previous_active_seconds !== undefined && (
+                            <span className="ml-2">
+                              Active: <span className="font-mono text-sky-300">{formatSecondsToHHMMSS(log.previous_active_seconds)}</span>
+                            </span>
+                          )}
+                        </div>
+                        <div className="text-neutral-400 truncate mt-0.5" title={log.reason}>
+                          {log.reason}
+                        </div>
+                      </div>
+                    ))
+                  )}
+                </div>
+              )}
+            </div>
           </div>
 
           {/* Actions: Sync and Save */}
