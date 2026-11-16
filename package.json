@@ -33,12 +33,18 @@
       "signAndEditExecutable": false,
       "target": [
         {
-          "target": "dir"
-        },
-        {
-          "target": "portable"
+          "target": "nsis"
         }
       ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "TripleS Time Tracker",
+      "uninstallDisplayName": "TripleS Time Tracker"
     }
   },
   "dependencies": {
