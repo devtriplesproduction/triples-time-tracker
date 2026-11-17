@@ -170,7 +170,7 @@ export const App: React.FC = () => {
     setIsTrackingActive((prev) => (prev !== calcIsActive ? calcIsActive : prev))
 
     if (state.todaySessions) {
-      const todayStr = getKolkataDateString()
+      const todayStr = getDateString(undefined, settings.timezone || 'Asia/Kolkata')
       const filtered = state.todaySessions.filter((s) => s.employee_id === activeUser.id && (s.session_date === todayStr || !s.session_date))
       setTodaySessions((prev) => {
         if (prev.length !== filtered.length) return filtered

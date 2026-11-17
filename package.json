@@ -3,6 +3,7 @@
   "version": "1.0.0",
   "private": true,
   "description": "TripleS ERP Time Tracker Windows Desktop Application",
+  "author": "Triple S Production",
   "main": "dist-electron/main.js",
   "scripts": {
     "dev": "vite",
@@ -44,7 +45,9 @@
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
       "shortcutName": "TripleS Time Tracker",
-      "uninstallDisplayName": "TripleS Time Tracker"
+      "uninstallDisplayName": "TripleS Time Tracker",
+      "artifactName": "TripleS-Time-Tracker-Setup-${version}.${ext}",
+      "include": "build/installer.nsh"
     }
   },
   "dependencies": {

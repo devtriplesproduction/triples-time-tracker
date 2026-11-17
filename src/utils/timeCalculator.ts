@@ -426,9 +426,6 @@ export function calculateDailyActiveSeconds(
 
   let totalActiveSeconds = 0
   for (const session of sessionMap.values()) {
-    // Only calculate active seconds if session belongs to or overlaps target date
-    if (session.session_date && session.session_date !== dateString) continue
-
     const workedSecondsOnDate = Math.floor(
       calculateSessionWorkedMsForDate(session, dateString, nowMs, timeZone) / 1000
     )
@@ -436,7 +433,26 @@ export function calculateDailyActiveSeconds(
 
     const sessionActiveSeconds =
       (session.active_minutes || 0) * 60 + (session.active_seconds_buffer || 0)
-    const activeOnDate = Math.min(workedSecondsOnDate, sessionActiveSeconds)
+
+    const totalSessionWorkedSec = Math.max(
+      workedSecondsOnDate,
+      (session.worked_minutes || 0) * 60,
+      calculateSessionWorkedSeconds(
+        session,
+        session.clock_out ? new Date(session.clock_out).getTime() : nowMs
+      )
+    )
+
+    let activeOnDate: number
+    if (totalSessionWorkedSec <= workedSecondsOnDate) {
+      activeOnDate = Math.min(workedSecondsOnDate, sessionActiveSeconds)
+    } else {
+      // Session crossed midnight: allocate active seconds proportionally across dates
+      // without proportional overcounting
+      const dateRatio = Math.min(1, Math.max(0, workedSecondsOnDate / totalSessionWorkedSec))
+      activeOnDate = Math.min(workedSecondsOnDate, Math.round(sessionActiveSeconds * dateRatio))
+    }
+
     totalActiveSeconds += activeOnDate
   }
 

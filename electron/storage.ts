@@ -89,7 +89,16 @@ class TrackerStorage {
       console.log(`[Storage] Session ${session.id} belongs to a previous date (${session.session_date} vs today ${today}). Finalizing at day boundary.`)
       const tz = this.data?.settings?.timezone || 'Asia/Kolkata'
       const { dayEndMs } = getDayBounds(session.session_date, tz)
-      const closeTime = session.last_heartbeat || new Date(dayEndMs - 1).toISOString()
+      const lastHbMs = session.last_heartbeat
+        ? new Date(session.last_heartbeat).getTime()
+        : new Date(session.clock_in).getTime()
+      const wasWorkingAcrossMidnight = (dayEndMs - lastHbMs) <= 5 * 60 * 1000
+
+      // If working across midnight, close at exact midnight boundary (dayEndMs) so previousSession.clock_out === continuationSession.clock_in
+      // Otherwise close at last heartbeat when employee actually left work
+      const closeTime = wasWorkingAcrossMidnight
+        ? new Date(dayEndMs).toISOString()
+        : (session.last_heartbeat || new Date(dayEndMs - 1).toISOString())
       if (Array.isArray(session.breaks)) {
         for (const b of session.breaks) {
           if (b.end_time === null) {
@@ -100,6 +109,7 @@ class TrackerStorage {
           }
         }
       }
+      const prevStatus = session.status
       session.clock_out = closeTime
       session.status = 'completed'
       const clockInTime = new Date(session.clock_in).getTime()
@@ -123,6 +133,60 @@ class TrackerStorage {
         createdAt: closeTime,
         retries: 0
       }, session.employee_id)
+
+      const empId = session.employee_id
+      const store = this.getEmployeeData(empId)
+
+      // If employee was working across midnight, ensure continuation session exists for today
+      if (wasWorkingAcrossMidnight) {
+        const alreadyHasTodaySession = store.todaySessions.some(
+          s => s.session_date === today && !s.clock_out && s.status !== 'completed'
+        )
+        if (!alreadyHasTodaySession) {
+          const isBreak = prevStatus === 'on_break' || prevStatus === 'On Break'
+          const midnightIso = new Date(dayEndMs).toISOString()
+          const newSession: TrackingSession = {
+            id: crypto.randomUUID(),
+            employee_id: empId,
+            session_date: today,
+            clock_in: midnightIso,
+            clock_out: null,
+            status: isBreak ? 'on_break' : 'working',
+            worked_minutes: 0,
+            active_minutes: 0,
+            suspended_seconds: 0,
+            active_seconds_buffer: 0,
+            screenshot_seconds_buffer: 0,
+            last_heartbeat: new Date().toISOString(),
+            breaks: isBreak ? [{
+              id: crypto.randomUUID(),
+              session_id: '',
+              start_time: midnightIso,
+              end_time: null,
+              duration_minutes: 0,
+              reason: 'Break continued across midnight'
+            }] : []
+          }
+          if (newSession.breaks.length > 0) {
+            newSession.breaks[0].session_id = newSession.id
+          }
+          store.currentSession = newSession
+          store.todaySessions.push(newSession)
+          store.lastRolloverDate = today
+          this.enqueuePending({
+            id: `session-${newSession.id}`,
+            type: 'session',
+            employee_id: empId,
+            data: newSession,
+            createdAt: midnightIso,
+            retries: 0
+          }, empId)
+          this.save()
+          return newSession
+        } else {
+          return store.todaySessions.find(s => s.session_date === today && !s.clock_out && s.status !== 'completed') || null
+        }
+      }
 
       return null
     }
@@ -172,10 +236,13 @@ class TrackerStorage {
 
           return null
         } else if (gapMs > 5000) {
-          // Quick reboot on the same day: add gap to suspended_seconds so shutdown downtime is NOT counted in worked hours
-          const addedSuspended = Math.floor(gapMs / 1000)
-          session.suspended_seconds = (session.suspended_seconds || 0) + addedSuspended
-          console.log(`[Storage] Quick reboot detected (${addedSuspended}s). Excluded from worked duration.`)
+          // Quick reboot on the same day: add gap to suspended_seconds only if NOT on break
+          const hasOpenBreak = Array.isArray(session.breaks) && session.breaks.some(b => b.end_time === null)
+          if (!hasOpenBreak) {
+            const addedSuspended = Math.floor(gapMs / 1000)
+            session.suspended_seconds = (session.suspended_seconds || 0) + addedSuspended
+            console.log(`[Storage] Quick reboot detected (${addedSuspended}s). Excluded from worked duration.`)
+          }
           session.last_heartbeat = new Date(now).toISOString()
         }
       }

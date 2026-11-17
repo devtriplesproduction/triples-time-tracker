@@ -25,7 +25,9 @@ class ActivityTracker {
   private isDetectingApp: boolean = false
   private tickCounter: number = 0
   private lastEmittedIdle: boolean = false
+  private lastIdleSeconds: number = 0
   private screenshotSecondsBuffer: number = 0
+  private pendingContinuationSuspendedSeconds: number = 0
 
   constructor() {
     this.currentBusinessDate = storage.getTodayBusinessDate()
@@ -44,48 +46,84 @@ class ActivityTracker {
     this.window = win
   }
 
+  public syncBuffersFromSession(session: TrackingSession | null) {
+    if (session && (session.status === 'working' || session.status === 'Working' || session.status === 'on_break' || session.status === 'On Break')) {
+      if (typeof session.active_seconds_buffer === 'number' && session.active_seconds_buffer >= 0) {
+        this.activeSecondsBuffer = session.active_seconds_buffer
+      }
+      if (typeof session.screenshot_seconds_buffer === 'number' && session.screenshot_seconds_buffer >= 0) {
+        this.screenshotSecondsBuffer = session.screenshot_seconds_buffer
+      }
+    }
+  }
+
   private setupPowerMonitor() {
     powerMonitor.on('suspend', () => {
-      console.log('[PowerMonitor] System suspended. Recording suspend interval.')
+      console.log('[ActivityTracker:State] PowerMonitor: system suspended.')
       this.isSuspended = true
       this.suspendStartTime = Date.now()
       this.emitState()
     })
 
     powerMonitor.on('resume', () => {
-      console.log('[PowerMonitor] System resumed.')
+      console.log('[ActivityTracker:State] PowerMonitor: system resumed.')
       if (this.suspendStartTime) {
         const user = storage.getCurrentUser()
         const session = user ? storage.getCurrentSession(user.id) : null
         if (session && user) {
-          const suspendedDurationMs = Math.max(0, Date.now() - this.suspendStartTime)
-          const addedSuspendedSec = Math.floor(suspendedDurationMs / 1000)
-          session.suspended_seconds = (session.suspended_seconds || 0) + addedSuspendedSec
-          console.log(`[PowerMonitor] Excluded ${addedSuspendedSec}s of sleep from employee ${user.id} worked duration.`)
-          storage.updateCurrentSession({ suspended_seconds: session.suspended_seconds }, user.id)
+          const hasOpenBreak = Array.isArray(session.breaks) && session.breaks.some(b => b.end_time === null)
+          if (!hasOpenBreak) {
+            const now = Date.now()
+            const tz = storage.getSettings().timezone || 'Asia/Kolkata'
+            const sessionDay = session.session_date || getDateString(new Date(session.clock_in), tz)
+            const { dayEndMs } = getDayBounds(sessionDay, tz)
+
+            // If suspend spanned across the midnight boundary of the session's date:
+            if (this.suspendStartTime < dayEndMs && now > dayEndMs) {
+              const day1SuspendedMs = Math.max(0, dayEndMs - this.suspendStartTime)
+              const day2SuspendedMs = Math.max(0, now - dayEndMs)
+              const day1Sec = Math.floor(day1SuspendedMs / 1000)
+              const day2Sec = Math.floor(day2SuspendedMs / 1000)
+
+              session.suspended_seconds = (session.suspended_seconds || 0) + day1Sec
+              this.pendingContinuationSuspendedSeconds = (this.pendingContinuationSuspendedSeconds || 0) + day2Sec
+              console.log(`[ActivityTracker:State] Sleep spanned midnight. Day 1 suspended: ${day1Sec}s, Day 2 suspended: ${day2Sec}s.`)
+            } else {
+              const suspendedDurationMs = Math.max(0, now - this.suspendStartTime)
+              const addedSuspendedSec = Math.floor(suspendedDurationMs / 1000)
+              session.suspended_seconds = (session.suspended_seconds || 0) + addedSuspendedSec
+              console.log(`[ActivityTracker:State] Excluded ${addedSuspendedSec}s of sleep from employee ${user.id} worked duration. Total suspended: ${session.suspended_seconds}s.`)
+            }
+            storage.updateCurrentSession({ suspended_seconds: session.suspended_seconds }, user.id, true)
+          }
         }
         this.suspendStartTime = null
       }
       this.isSuspended = false
+      // Synchronize monotonic timers to prevent double-counting in tick()
+      this.lastTickTime = Date.now()
+      this.lastHrTime = process.hrtime.bigint()
       this.lastInputCheckTime = Date.now()
       this.emitState()
     })
 
     powerMonitor.on('lock-screen', () => {
-      console.log('[PowerMonitor] Screen locked')
+      console.log('[ActivityTracker:State] PowerMonitor: screen locked.')
       this.isScreenLocked = true
       this.emitState()
     })
 
     powerMonitor.on('unlock-screen', () => {
-      console.log('[PowerMonitor] Screen unlocked')
+      console.log('[ActivityTracker:State] PowerMonitor: screen unlocked.')
       this.isScreenLocked = false
+      this.lastTickTime = Date.now()
+      this.lastHrTime = process.hrtime.bigint()
       this.lastInputCheckTime = Date.now()
       this.emitState()
     })
 
     powerMonitor.on('shutdown', () => {
-      console.log('[PowerMonitor] System shutdown event received. Finalizing active session.')
+      console.log('[ActivityTracker:State] PowerMonitor: system shutdown received.')
       this.handleSystemShutdown()
     })
   }
@@ -97,9 +135,27 @@ class ActivityTracker {
     this.lastTickTime = Date.now()
     this.lastHrTime = process.hrtime.bigint()
     const tz = storage.getSettings().timezone || 'Asia/Kolkata'
-    this.currentBusinessDate = getDateString(new Date(), tz)
+    const today = getDateString(new Date(), tz)
+    this.currentBusinessDate = today
 
     const user = storage.getCurrentUser()
+    if (user && user.id) {
+      const store = storage.getEmployeeData(user.id)
+      const rawSession = store.currentSession
+      // If an unclosed session from prior date exists upon startup, execute rollover cleanly
+      if (
+        rawSession &&
+        rawSession.session_date &&
+        rawSession.session_date !== today &&
+        !rawSession.clock_out &&
+        rawSession.status !== 'completed' &&
+        rawSession.status !== 'Completed'
+      ) {
+        console.log(`[ActivityTracker] Active session from prior day (${rawSession.session_date}) detected on startup. Executing automatic rollover to ${today}.`)
+        this.handleDayRollover(rawSession.session_date, today, tz)
+      }
+    }
+
     const session = user ? storage.getCurrentSession(user.id) : null
     if (session) {
       this.activeSecondsBuffer = session.active_seconds_buffer || 0
@@ -271,8 +327,21 @@ class ActivityTracker {
     }
 
     const settings = storage.getSettings()
+    const thresholdSec = settings.idleThresholdSeconds || 60
     const idleSeconds = powerMonitor.getSystemIdleTime()
-    const isIdle = idleSeconds >= settings.idleThresholdSeconds
+    const isIdle = idleSeconds >= thresholdSec
+
+    // If active user input is detected, autocorrect screen lock or suspend flags if they were stuck
+    if (idleSeconds < thresholdSec) {
+      if (this.isScreenLocked) {
+        console.log(`[ActivityTracker:Input] Input detected (idle: ${idleSeconds}s < ${thresholdSec}s) while screen was flagged locked. Autocorrecting isScreenLocked to false.`)
+        this.isScreenLocked = false
+      }
+      if (this.isSuspended) {
+        console.log(`[ActivityTracker:Input] Input detected (idle: ${idleSeconds}s < ${thresholdSec}s) while system was flagged suspended. Autocorrecting isSuspended to false.`)
+        this.isSuspended = false
+      }
+    }
 
     // Calculate real elapsed time delta with monotonic anti-tamper validation
     const now = Date.now()
@@ -280,20 +349,24 @@ class ActivityTracker {
     const monotonicDeltaMs = Number(nowHr - this.lastHrTime) / 1_000_000
     this.lastHrTime = nowHr
 
-    let deltaMs = this.lastTickTime ? (now - this.lastTickTime) : 1000
+    const intervalStart = this.lastTickTime || (now - 1000)
+    let deltaMs = this.lastTickTime ? Math.max(0, now - this.lastTickTime) : 1000
     this.lastTickTime = now
 
-    // Anti-tampering: if system clock jumped or was manually altered, clamp to monotonic time
+    const isWorking = session.status === 'Working' || session.status === 'working'
+    const isOnBreak = session.status === 'On Break' || session.status === 'on_break' || (session.breaks && session.breaks.some(b => b.end_time === null))
+
+    // Anti-tampering / Suspend detection: if system clock jumped or PC woke from sleep without suspend event
     if (Math.abs(deltaMs - monotonicDeltaMs) > 3000) {
-      console.warn(`[ActivityTracker] System clock anomaly detected (wall: ${deltaMs}ms vs monotonic: ${Math.round(monotonicDeltaMs)}ms). Clamping to monotonic delta.`)
       const clockJumpSec = Math.round((deltaMs - monotonicDeltaMs) / 1000)
-      if (clockJumpSec > 0) {
+      console.warn(`[ActivityTracker:Tick] System clock anomaly/sleep detected (wall: ${deltaMs}ms vs monotonic: ${Math.round(monotonicDeltaMs)}ms, jump: ${clockJumpSec}s).`)
+      // Only allocate clock jump to suspended_seconds if positive and NOT already on break
+      if (clockJumpSec > 0 && !isOnBreak) {
         session.suspended_seconds = Math.max(0, (session.suspended_seconds || 0) + clockJumpSec)
+        console.log(`[ActivityTracker:Tick] Excluded ${clockJumpSec}s of sleep from employee worked duration. Total suspended: ${session.suspended_seconds}s.`)
       }
-      deltaMs = Math.min(3000, Math.max(0, monotonicDeltaMs))
+      deltaMs = Math.max(0, monotonicDeltaMs)
     }
-    deltaMs = Math.min(3000, Math.max(0, deltaMs))
-    const deltaSec = deltaMs / 1000
 
     session.last_heartbeat = new Date(now).toISOString()
 
@@ -301,7 +374,7 @@ class ActivityTracker {
     const clockInTime = new Date(session.clock_in).getTime()
 
     let totalBreakMs = 0
-    for (const b of session.breaks) {
+    for (const b of session.breaks || []) {
       const start = new Date(b.start_time).getTime()
       const end = b.end_time ? new Date(b.end_time).getTime() : now
       totalBreakMs += Math.max(0, end - start)
@@ -311,10 +384,40 @@ class ActivityTracker {
     const currentWorkedMs = Math.max(0, now - clockInTime - totalBreakMs - suspendedMs)
     session.worked_minutes = Math.floor(currentWorkedMs / 60000)
 
-    const isWorking = session.status === 'Working' || session.status === 'working'
+    // Accurate Active Time Accumulation during [intervalStart, now]
     let minuteRolledOver = false
-    if (isWorking && !isIdle && !this.isSuspended && !this.isScreenLocked) {
-      this.activeRemainderMs += deltaMs
+    let activeDeltaMs = 0
+
+    if (isWorking && !isOnBreak && !this.isSuspended && !this.isScreenLocked) {
+      if (!isIdle) {
+        if (this.lastEmittedIdle) {
+          // Transition from Idle -> Active: user resumed activity
+          const activeSinceInputMs = idleSeconds > 0 ? Math.round(idleSeconds * 1000) : deltaMs
+          activeDeltaMs = Math.min(deltaMs, Math.max(0, activeSinceInputMs))
+        } else {
+          // Continuously active
+          activeDeltaMs = deltaMs
+        }
+      } else {
+        // User is currently idle (idleSeconds >= thresholdSec)
+        if (!this.lastEmittedIdle) {
+          // Transition from Active -> Idle: portion before crossing threshold was active
+          const overdueIdleMs = (idleSeconds - thresholdSec) * 1000
+          if (overdueIdleMs < deltaMs) {
+            activeDeltaMs = Math.max(0, deltaMs - overdueIdleMs)
+          } else {
+            activeDeltaMs = 0
+          }
+        } else {
+          // Continuously idle
+          activeDeltaMs = 0
+        }
+      }
+
+      // Bound active delta to physical elapsed deltaMs
+      activeDeltaMs = Math.min(deltaMs, Math.max(0, activeDeltaMs))
+
+      this.activeRemainderMs += activeDeltaMs
       while (this.activeRemainderMs >= 1000) {
         this.activeRemainderMs -= 1000
         this.activeSecondsBuffer += 1
@@ -339,7 +442,8 @@ class ActivityTracker {
       }
 
       // Automatic 7-minute periodic screenshot capture (420 active working seconds)
-      this.screenshotSecondsBuffer += deltaSec
+      const activeDeltaSec = activeDeltaMs / 1000
+      this.screenshotSecondsBuffer += activeDeltaSec
       if (this.screenshotSecondsBuffer >= 420) {
         this.screenshotSecondsBuffer = 0
         screenshotService.captureAndSaveScreenshot(
@@ -370,10 +474,23 @@ class ActivityTracker {
 
     this.tickCounter += 1
     const idleChanged = isIdle !== this.lastEmittedIdle
+    const wasIdle = this.lastEmittedIdle
     this.lastEmittedIdle = isIdle
+    this.lastIdleSeconds = idleSeconds
+
+    // Diagnostic logging
+    if (idleChanged) {
+      console.log(`[ActivityTracker:Idle] Idle transition: isIdle=${isIdle} (idleSeconds=${idleSeconds}s, threshold=${thresholdSec}s, transition=${wasIdle ? 'Idle->Active' : 'Active->Idle'}).`)
+    }
+    if (minuteRolledOver) {
+      console.log(`[ActivityTracker:Accumulator] Minute rollover: worked=${session.worked_minutes}m, active=${session.active_minutes}m (buffer: ${session.active_seconds_buffer}s), suspended=${session.suspended_seconds}s.`)
+    }
+    if (this.tickCounter % 60 === 0) {
+      console.log(`[ActivityTracker:Tick] Diagnostic checkpoint #${this.tickCounter}: status=${session.status}, idle=${idleSeconds}s (${isIdle ? 'IDLE' : 'ACTIVE'}), deltaMs=${Math.round(deltaMs)}ms, activeDeltaMs=${Math.round(activeDeltaMs)}ms, worked=${session.worked_minutes}m, active=${session.active_minutes}m:${session.active_seconds_buffer}s.`)
+    }
 
     // Emit every second when active or on break so that live counters update smoothly, or on idle change or minute rollover
-    if (isWorking || session.status === 'on_break' || idleChanged || minuteRolledOver || (this.tickCounter % 5 === 0)) {
+    if (isWorking || isOnBreak || idleChanged || minuteRolledOver || (this.tickCounter % 5 === 0)) {
       this.emitState()
     }
   }
@@ -504,9 +621,12 @@ class ActivityTracker {
     this.lastTickTime = Date.now()
     this.lastHrTime = process.hrtime.bigint()
     this.currentBusinessDate = today
-    storage.setCurrentSession(newSession, employeeId)
     this.activeSecondsBuffer = 0
     this.activeRemainderMs = 0
+    this.isSuspended = false
+    this.isScreenLocked = false
+    storage.setCurrentSession(newSession, employeeId)
+    console.log(`[ActivityTracker:State] Employee ${employeeId} clocked in at ${nowIso}. Session ID: ${newSession.id}`)
     if (shouldEmit) {
       this.emitState()
     }
@@ -540,8 +660,9 @@ class ActivityTracker {
       status: 'on_break',
       breaks: session.breaks,
       active_seconds_buffer: Math.round(this.activeSecondsBuffer)
-    }, empId)
+    }, empId, true)
 
+    console.log(`[ActivityTracker:State] Employee ${empId} took break: ${newBreak.reason}. Active buffer preserved at ${this.activeSecondsBuffer}s.`)
     // Preserve activeSecondsBuffer across break transitions
     this.emitState()
     return session
@@ -568,12 +689,16 @@ class ActivityTracker {
     }
 
     session.status = 'working'
+    this.lastTickTime = Date.now()
+    this.lastHrTime = process.hrtime.bigint()
+
     storage.updateCurrentSession({
       status: 'working',
       breaks: session.breaks,
       active_seconds_buffer: Math.round(this.activeSecondsBuffer)
-    }, empId)
+    }, empId, true)
 
+    console.log(`[ActivityTracker:State] Employee ${empId} resumed work from break. Active buffer preserved at ${this.activeSecondsBuffer}s.`)
     // Preserve activeSecondsBuffer across break transitions
     this.emitState()
     return session
@@ -596,8 +721,16 @@ class ActivityTracker {
       ongoingBreak.duration_minutes = Math.max(0, Math.floor((now.getTime() - startMs) / 60000))
     }
 
+    // Roll over any full minutes remaining in activeSecondsBuffer
+    if (this.activeSecondsBuffer >= 60) {
+      const extraMinutes = Math.floor(this.activeSecondsBuffer / 60)
+      session.active_minutes += extraMinutes
+      this.activeSecondsBuffer %= 60
+    }
+    session.active_seconds_buffer = Math.floor(this.activeSecondsBuffer)
     session.clock_out = now.toISOString()
     session.status = 'completed'
+    session.last_heartbeat = now.toISOString()
 
     const clockInTime = new Date(session.clock_in).getTime()
     let totalBreakMs = 0
@@ -619,6 +752,8 @@ class ActivityTracker {
       store.todaySessions.push(session)
     }
     storage.saveStore()
+
+    console.log(`[ActivityTracker:State] Employee ${empId} clocked out. Final worked=${session.worked_minutes}m, active=${session.active_minutes}m:${session.active_seconds_buffer}s, breaks=${totalBreakMs / 1000}s, suspended=${session.suspended_seconds}s.`)
 
     this.activeSecondsBuffer = 0
     this.activeRemainderMs = 0
@@ -709,6 +844,14 @@ class ActivityTracker {
     session.status = 'completed'
     session.last_heartbeat = nowIso
 
+    // Roll over any full minutes remaining in activeSecondsBuffer
+    if (this.activeSecondsBuffer >= 60) {
+      const extraMinutes = Math.floor(this.activeSecondsBuffer / 60)
+      session.active_minutes += extraMinutes
+      this.activeSecondsBuffer %= 60
+    }
+    session.active_seconds_buffer = Math.floor(this.activeSecondsBuffer)
+
     const clockInTime = new Date(session.clock_in).getTime()
     let totalBreakMs = 0
     for (const b of session.breaks || []) {
@@ -737,6 +880,8 @@ class ActivityTracker {
       createdAt: nowIso,
       retries: 0
     }, user.id)
+
+    console.log(`[ActivityTracker:State] System shutdown finalized session ${session.id}: worked=${session.worked_minutes}m, active=${session.active_minutes}m:${session.active_seconds_buffer}s.`)
 
     this.activeSecondsBuffer = 0
     this.activeRemainderMs = 0
@@ -772,7 +917,9 @@ class ActivityTracker {
       return
     }
 
-    const activeSession = store.currentSession
+    const activeSession = store.currentSession || (Array.isArray(store.todaySessions)
+      ? store.todaySessions.find(s => s.session_date === previousDay && !s.clock_out && s.status !== 'completed' && s.status !== 'Completed')
+      : null)
     const wasActive = Boolean(
       activeSession &&
       !activeSession.clock_out &&
@@ -782,7 +929,16 @@ class ActivityTracker {
     const prevStatus = wasActive ? activeSession!.status : 'completed'
 
     const { dayEndMs } = getDayBounds(previousDay, tz)
-    const closeIso = new Date(dayEndMs).toISOString()
+    const lastHbMs = activeSession?.last_heartbeat
+      ? new Date(activeSession.last_heartbeat).getTime()
+      : (activeSession ? new Date(activeSession.clock_in).getTime() : 0)
+    // If the computer was shut down or offline > 5 minutes before midnight, the work session stopped before midnight
+    const isStaleBeforeMidnight = wasActive && ((dayEndMs - lastHbMs) > 5 * 60 * 1000)
+    const shouldContinueAcrossMidnight = wasActive && !isStaleBeforeMidnight
+
+    const closeIso = isStaleBeforeMidnight && activeSession?.last_heartbeat
+      ? activeSession.last_heartbeat
+      : new Date(dayEndMs).toISOString()
     const midnightStartIso = new Date(dayEndMs).toISOString()
 
     let closedPreviousSessionId: string | null = null
@@ -816,6 +972,13 @@ class ActivityTracker {
       const suspendedMs = (activeSession.suspended_seconds || 0) * 1000
       const finalWorkedMs = Math.max(0, dayEndMs - clockInTime - totalBreakMs - suspendedMs)
       activeSession.worked_minutes = Math.floor(finalWorkedMs / 60000)
+
+      if (this.activeSecondsBuffer >= 60) {
+        const extraMinutes = Math.floor(this.activeSecondsBuffer / 60)
+        activeSession.active_minutes += extraMinutes
+        this.activeSecondsBuffer %= 60
+      }
+      activeSession.active_seconds_buffer = Math.floor(this.activeSecondsBuffer)
 
       // Update in todaySessions
       const idx = store.todaySessions.findIndex(s => s.id === activeSession.id)
@@ -901,7 +1064,7 @@ class ActivityTracker {
     }, user.id)
 
     // 4. Maintain ongoing session across midnight without losing or double-counting time
-    if (wasActive) {
+    if (shouldContinueAcrossMidnight) {
       const isBreak = prevStatus === 'on_break'
       const newSession: TrackingSession = {
         id: crypto.randomUUID(),
@@ -912,7 +1075,7 @@ class ActivityTracker {
         status: isBreak ? 'on_break' : 'working',
         worked_minutes: 0,
         active_minutes: 0,
-        suspended_seconds: 0,
+        suspended_seconds: this.pendingContinuationSuspendedSeconds || 0,
         active_seconds_buffer: 0,
         screenshot_seconds_buffer: 0,
         last_heartbeat: new Date().toISOString(),
@@ -940,8 +1103,10 @@ class ActivityTracker {
         createdAt: midnightStartIso,
         retries: 0
       }, user.id)
+      this.pendingContinuationSuspendedSeconds = 0
     } else {
       store.currentSession = null
+      this.pendingContinuationSuspendedSeconds = 0
     }
 
     // 5. Mark duplicate prevention flag and reset buffers

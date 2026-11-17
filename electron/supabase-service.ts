@@ -462,15 +462,37 @@ class SupabaseService {
         }
       })
 
+      const store = storage.getEmployeeData(employeeId)
+      // Merge dbSessions with existing local sessions preserving local precision, buffers and breaks
+      const mergedSessions: TrackingSession[] = formattedSessions.map((s: TrackingSession) => {
+        const local = store.todaySessions.find(ls => ls.id === s.id)
+        if (local) {
+          const mergedWorkedMinutes = Math.max(s.worked_minutes, local.worked_minutes)
+          const mergedActiveMinutes = Math.max(s.active_minutes, local.active_minutes)
+          const mergedActiveSecondsBuffer = local.active_seconds_buffer || s.active_seconds_buffer || 0
+          const mergedSuspendedSeconds = Math.max(s.suspended_seconds || 0, local.suspended_seconds || 0)
+          const mergedBreaks = (local.breaks && local.breaks.length >= s.breaks.length) ? local.breaks : s.breaks
+          return {
+            ...s,
+            worked_minutes: mergedWorkedMinutes,
+            active_minutes: mergedActiveMinutes,
+            active_seconds_buffer: mergedActiveSecondsBuffer,
+            suspended_seconds: mergedSuspendedSeconds,
+            breaks: mergedBreaks
+          }
+        }
+        return s
+      })
+
       // If local session is active, ensure it is preserved in todaySessions list
-      if (isLocalActive && localSession && !formattedSessions.some(s => s.id === localSession.id)) {
-        formattedSessions.push(localSession)
+      if (isLocalActive && localSession && !mergedSessions.some(s => s.id === localSession.id)) {
+        mergedSessions.push(localSession)
       }
 
-      storage.setTodaySessions(formattedSessions, employeeId)
+      storage.setTodaySessions(mergedSessions, employeeId)
 
-      // Find an active session in DB (clock_out is null and status is working or on_break)
-      const activeDbSession = formattedSessions.find(
+      // Find an active session in merged sessions
+      const activeDbSession = mergedSessions.find(
         s => !s.clock_out && (s.status === 'working' || s.status === 'Working' || s.status === 'on_break' || s.status === 'On Break')
       )
 
@@ -481,17 +503,18 @@ class SupabaseService {
           if (isLocalActive && localSession && localSession.id === validated.id) {
             validated.worked_minutes = Math.max(validated.worked_minutes, localSession.worked_minutes)
             validated.active_minutes = Math.max(validated.active_minutes, localSession.active_minutes)
-            validated.active_seconds_buffer = localSession.active_seconds_buffer || 0
+            validated.active_seconds_buffer = localSession.active_seconds_buffer || validated.active_seconds_buffer || 0
             validated.suspended_seconds = Math.max(validated.suspended_seconds || 0, localSession.suspended_seconds || 0)
           }
           storage.setCurrentSession(validated, employeeId)
+          activityTracker.syncBuffersFromSession(validated)
         } else {
           storage.setCurrentSession(null, employeeId)
         }
       } else {
         // No active session in DB.
         // Check if DB explicitly has localSession marked completed or clocked out
-        const explicitlyEndedInDb = isLocalActive && formattedSessions.some(
+        const explicitlyEndedInDb = isLocalActive && mergedSessions.some(
           s => s.id === localSession!.id && (s.clock_out !== null || s.status === 'completed' || s.status === 'Completed')
         )
 
@@ -503,6 +526,7 @@ class SupabaseService {
         // If isLocalActive and not explicitly ended in DB, PRESERVE localSession!
       }
 
+      console.log(`[SupabaseService:Sync] Synchronized employee ${employeeId} sessions with DB (sessions count: ${mergedSessions.length}).`)
       return { success: true }
     } catch (e: any) {
       console.warn('[SupabaseService] Error syncing employee sessions from Supabase:', e)
