@@ -1,6 +1,7 @@
 import React from 'react'
 import { Minus, Square, X, Sun, Moon } from 'lucide-react'
 import type { TrackingStatus } from '../types'
+import logoImg from '../assets/logo.png'
 
 interface TitleBarProps {
   status: TrackingStatus
@@ -25,6 +26,11 @@ export const TitleBar: React.FC<TitleBarProps> = ({ theme, onToggleTheme }) => {
     >
       {/* Brand / App Title */}
       <div className="flex items-center gap-2">
+        <img
+          src={logoImg}
+          alt="TripleS Logo"
+          className="w-4 h-4 rounded-full object-contain shrink-0 select-none pointer-events-none"
+        />
         <span
           className="text-xs font-semibold tracking-wide"
           style={{ color: 'var(--text-secondary)' }}

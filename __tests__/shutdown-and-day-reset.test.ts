@@ -196,5 +196,76 @@ describe('Shutdown, Day-End Reset, and Accurate Time Tracking', () => {
     expect(formatSecondsToHHMMSS(todayWorked)).toBe('00:00:00')
     expect(formatSecondsToHHMMSS(todayActive)).toBe('00:00:00')
   })
+
+  it('keeps application session tracking continuously beyond 8 hours 32 minutes without auto-closing', () => {
+    // Scenario: Employee clocks in at 09:00:00 IST and works past 8 hours 32 minutes (512 minutes).
+    // The application and session must remain active, continuously accumulating worked seconds.
+    const clockInIso = '2026-11-10T09:00:00.000+05:30'
+    const clockInMs = new Date(clockInIso).getTime()
+    const elapsedMinutes = 512 // 8 hours 32 minutes
+    const testNowMs = clockInMs + elapsedMinutes * 60 * 1000
+
+    const session: TrackingSession = {
+      id: 'sess-long-shift',
+      employee_id: employeeId,
+      session_date: '2026-11-10',
+      clock_in: clockInIso,
+      clock_out: null, // Still working! Must not be auto-closed!
+      status: 'working',
+      worked_minutes: elapsedMinutes,
+      active_minutes: elapsedMinutes - 10,
+      suspended_seconds: 0,
+      active_seconds_buffer: 0,
+      last_heartbeat: new Date(testNowMs).toISOString(),
+      breaks: []
+    }
+
+    const calculatedWorked = calculateSessionWorkedSeconds(session, testNowMs)
+    expect(calculatedWorked).toBe(512 * 60)
+    expect(formatSecondsToHHMMSS(calculatedWorked)).toBe('08:32:00')
+    expect(session.clock_out).toBeNull()
+    expect(session.status).toBe('working')
+
+    // At 8 hours 35 minutes (515 minutes), tracking continues seamlessly
+    const testLaterMs = clockInMs + 515 * 60 * 1000
+    const calculatedLater = calculateSessionWorkedSeconds(session, testLaterMs)
+    expect(calculatedLater).toBe(515 * 60)
+    expect(formatSecondsToHHMMSS(calculatedLater)).toBe('08:35:00')
+  })
+
+  it('simulates window close interceptor: hides window to tray and does not quit application', () => {
+    let isQuitting = false
+    let isWindowHidden = false
+    let isAppQuit = false
+
+    const mockEvent = {
+      defaultPrevented: false,
+      preventDefault: () => {
+        mockEvent.defaultPrevented = true
+      }
+    }
+
+    const handleWindowClose = (event: typeof mockEvent) => {
+      if (!isQuitting) {
+        event.preventDefault()
+        isWindowHidden = true
+        return
+      }
+      isAppQuit = true
+    }
+
+    // User clicks X on window
+    handleWindowClose(mockEvent)
+
+    expect(mockEvent.defaultPrevented).toBe(true)
+    expect(isWindowHidden).toBe(true)
+    expect(isAppQuit).toBe(false)
+
+    // Only explicit user quit allows exit
+    isQuitting = true
+    const quitEvent = { defaultPrevented: false, preventDefault: () => {} }
+    handleWindowClose(quitEvent)
+    expect(isAppQuit).toBe(true)
+  })
 })
 

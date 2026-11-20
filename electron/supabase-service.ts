@@ -18,6 +18,7 @@ class SupabaseService {
   private client: SupabaseClient
   private isSyncingQueue: boolean = false
   private isSyncingERP: boolean = false
+  private initSessionPromise: Promise<{ success: boolean; user?: UserProfile; error?: string }> | null = null
 
   constructor() {
     this.client = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
@@ -38,43 +39,170 @@ class SupabaseService {
           refresh_token: session.refresh_token,
           expires_at: session.expires_at
         })
-      } else if (event === 'SIGNED_OUT') {
-        storage.setAuthTokens(null)
       }
+      // Note: Never wipe tokens on background SIGNED_OUT events.
+      // Explicit logout handles token clearing via supabaseService.logout().
     })
   }
 
   private isNetworkError(error: any): boolean {
     if (!error) return false
-    const msg = (error.message || error.toString() || '').toLowerCase()
+    const msg = (error.message || error.error_description || error.toString() || '').toLowerCase()
+    const code = (error.code || error.cause?.code || '').toLowerCase()
+    const name = (error.name || '').toLowerCase()
+    const status = error.status || error.statusCode || 0
+
+    if (status >= 500 || status === 408 || status === 0) return true
+
     return (
       msg.includes('fetch failed') ||
       msg.includes('network') ||
       msg.includes('enotfound') ||
       msg.includes('econnrefused') ||
+      msg.includes('econnreset') ||
       msg.includes('ehostunreach') ||
+      msg.includes('enetunreach') ||
+      msg.includes('enetdown') ||
+      msg.includes('eai_again') ||
       msg.includes('timed out') ||
       msg.includes('timeout') ||
       msg.includes('failed to fetch') ||
-      msg.includes('abort')
+      msg.includes('abort') ||
+      msg.includes('socket hang up') ||
+      msg.includes('err_internet_disconnected') ||
+      msg.includes('err_name_not_resolved') ||
+      msg.includes('err_connection_refused') ||
+      msg.includes('err_connection_reset') ||
+      msg.includes('err_connection_timed_out') ||
+      msg.includes('err_network_changed') ||
+      code.includes('enotfound') ||
+      code.includes('econnrefused') ||
+      code.includes('econnreset') ||
+      code.includes('etimedout') ||
+      code.includes('eai_again') ||
+      code.includes('und_err') ||
+      name.includes('typeerror') ||
+      name.includes('fetcherror')
     )
   }
 
-  public async initSession(): Promise<{ success: boolean; user?: UserProfile; error?: string }> {
+  private isExplicitAuthRevocationError(error: any): boolean {
+    if (!error || this.isNetworkError(error)) return false
+    const msg = (error.message || error.error_description || error.toString() || '').toLowerCase()
+    const code = (error.code || '').toLowerCase()
+    return (
+      msg.includes('invalid refresh token') ||
+      msg.includes('refresh_token_not_found') ||
+      msg.includes('refresh token already used') ||
+      msg.includes('user not found') ||
+      msg.includes('user is banned') ||
+      code === 'refresh_token_not_found' ||
+      code === 'refresh_token_already_used'
+    )
+  }
+
+  public async ensureValidSession(expectedEmployeeId?: string): Promise<boolean> {
     try {
-      const tokens = storage.getAuthTokens()
-      if (!tokens || !tokens.access_token || !tokens.refresh_token) {
-        return { success: false }
+      const nowSeconds = Math.floor(Date.now() / 1000)
+      const { data: { session } } = await this.client.auth.getSession()
+
+      // 1. Check if current in-memory session is active and not expiring soon (>60s)
+      if (session && session.access_token && session.expires_at && session.expires_at > (nowSeconds + 60)) {
+        if (!expectedEmployeeId || session.user?.id === expectedEmployeeId) {
+          return true
+        }
       }
 
-      const { data, error } = await this.client.auth.setSession({
+      // 2. If session exists but is expiring or expired, refresh it
+      if (session?.refresh_token) {
+        try {
+          const { data: refreshed, error: refErr } = await this.client.auth.refreshSession()
+          if (!refErr && refreshed?.session?.access_token) {
+            storage.setAuthTokens({
+              access_token: refreshed.session.access_token,
+              refresh_token: refreshed.session.refresh_token,
+              expires_at: refreshed.session.expires_at
+            })
+            if (!expectedEmployeeId || refreshed.session.user?.id === expectedEmployeeId) {
+              return true
+            }
+          }
+        } catch (e) {
+          console.warn('[SupabaseService] Token refresh exception:', e)
+        }
+      }
+
+      // 3. Fallback to encrypted tokens in local storage
+      const tokens = storage.getAuthTokens()
+      if (!tokens || !tokens.refresh_token) {
+        return false
+      }
+
+      const { data: setRes, error: setErr } = await this.client.auth.setSession({
         access_token: tokens.access_token,
         refresh_token: tokens.refresh_token
       })
 
-      if (error) {
-        if (this.isNetworkError(error)) {
-          const cachedUser = storage.getCurrentUser()
+      if (!setErr && setRes?.session?.access_token) {
+        storage.setAuthTokens({
+          access_token: setRes.session.access_token,
+          refresh_token: setRes.session.refresh_token,
+          expires_at: setRes.session.expires_at
+        })
+        return !expectedEmployeeId || setRes.session.user?.id === expectedEmployeeId
+      }
+
+      return false
+    } catch (err: any) {
+      console.warn('[SupabaseService] ensureValidSession error:', err.message)
+      return false
+    }
+  }
+
+  public async initSession(): Promise<{ success: boolean; user?: UserProfile; error?: string }> {
+    if (this.initSessionPromise) {
+      return this.initSessionPromise
+    }
+
+    this.initSessionPromise = this.performInitSession().finally(() => {
+      this.initSessionPromise = null
+    })
+
+    return this.initSessionPromise
+  }
+
+  private async performInitSession(): Promise<{ success: boolean; user?: UserProfile; error?: string }> {
+    try {
+      const cachedUser = storage.getCurrentUser()
+      const tokens = storage.getAuthTokens()
+
+      // If active user is already authenticated in-memory with valid session, return immediately
+      if (cachedUser && cachedUser.id) {
+        try {
+          const { data: currentSessionData } = await this.client.auth.getSession()
+          if (currentSessionData?.session && currentSessionData.session.user?.id === cachedUser.id) {
+            return { success: true, user: cachedUser }
+          }
+        } catch (_) {}
+      }
+
+      if (!tokens || !tokens.access_token || !tokens.refresh_token) {
+        if (cachedUser && cachedUser.id) {
+          console.log('[SupabaseService] No tokens stored but cached user found:', cachedUser.email)
+          activityTracker.onUserLogin(cachedUser)
+          return { success: true, user: cachedUser }
+        }
+        return { success: false }
+      }
+
+      let session: any = null
+      const { data: setRes, error: setErr } = await this.client.auth.setSession({
+        access_token: tokens.access_token,
+        refresh_token: tokens.refresh_token
+      })
+
+      if (setErr) {
+        if (this.isNetworkError(setErr)) {
           if (cachedUser && cachedUser.id) {
             console.log('[SupabaseService] Network unavailable during startup. Restoring cached user:', cachedUser.email)
             activityTracker.onUserLogin(cachedUser)
@@ -90,23 +218,52 @@ class SupabaseService {
           }
         }
 
-        console.warn('[SupabaseService] Session restoration failed (revoked or expired):', error.message)
-        storage.setAuthTokens(null)
-        storage.clearActiveUser()
-        activityTracker.onUserLogout()
-        try {
-          await this.client.auth.signOut()
-        } catch (_) {}
+        if (this.isExplicitAuthRevocationError(setErr)) {
+          console.warn('[SupabaseService] Session restoration failed (revoked or expired):', setErr.message)
+          storage.setAuthTokens(null)
+          if (cachedUser && cachedUser.id) {
+            console.log('[SupabaseService] Retaining cached user profile for persistent desktop operation:', cachedUser.email)
+            activityTracker.onUserLogin(cachedUser)
+            return {
+              success: true,
+              user: cachedUser,
+              error: 'Session token expired. Using cached profile for time tracking.'
+            }
+          }
+          storage.clearActiveUser()
+          activityTracker.onUserLogout()
+          try {
+            await this.client.auth.signOut({ scope: 'local' })
+          } catch (_) {}
+          return {
+            success: false,
+            error: 'Your session has expired or was revoked. Please log in again.'
+          }
+        }
+
+        // For non-fatal / non-revocation errors, keep cached user intact
+        if (cachedUser && cachedUser.id) {
+          console.log('[SupabaseService] Preserving cached user on non-fatal session error:', setErr.message)
+          activityTracker.onUserLogin(cachedUser)
+          return {
+            success: true,
+            user: cachedUser,
+            error: 'Offline mode: Using cached login credentials.'
+          }
+        }
+
         return {
           success: false,
-          error: 'Your session has expired or was revoked. Please log in again.'
+          error: setErr.message || 'Authentication restoration failed'
         }
       }
 
-      if (!data.user) {
-        storage.setAuthTokens(null)
-        storage.clearActiveUser()
-        activityTracker.onUserLogout()
+      session = setRes?.session
+      if (!session || !session.user) {
+        if (cachedUser && cachedUser.id) {
+          activityTracker.onUserLogin(cachedUser)
+          return { success: true, user: cachedUser }
+        }
         return {
           success: false,
           error: 'Your session has expired. Please log in again.'
@@ -114,7 +271,7 @@ class SupabaseService {
       }
 
       // Check if user is deactivated or banned in Auth metadata
-      if (data.user.app_metadata?.deactivated || (data.user as any).banned_until) {
+      if (session.user.app_metadata?.deactivated || (session.user as any).banned_until) {
         console.warn('[SupabaseService] User is deactivated or banned in Auth metadata.')
         await this.logout()
         return {
@@ -127,13 +284,12 @@ class SupabaseService {
       const { data: profile, error: pError } = await this.client
         .from('profiles')
         .select('id, first_name, last_name, employee_id, department, designation, role')
-        .eq('id', data.user.id)
+        .eq('id', session.user.id)
         .maybeSingle()
 
       if (pError) {
-        if (this.isNetworkError(pError)) {
-          const cachedUser = storage.getCurrentUser()
-          if (cachedUser && cachedUser.id === data.user.id) {
+        if (this.isNetworkError(pError) || cachedUser) {
+          if (cachedUser && cachedUser.id === session.user.id) {
             activityTracker.onUserLogin(cachedUser)
             return {
               success: true,
@@ -142,8 +298,11 @@ class SupabaseService {
             }
           }
         }
-        console.warn('[SupabaseService] Session restoration failed - profile query error:', pError.message)
-        await this.logout()
+        console.warn('[SupabaseService] Profile query error on session restore:', pError.message)
+        if (cachedUser && cachedUser.id === session.user.id) {
+          activityTracker.onUserLogin(cachedUser)
+          return { success: true, user: cachedUser }
+        }
         return {
           success: false,
           error: 'Database error reading profile. Please log in again.'
@@ -151,7 +310,12 @@ class SupabaseService {
       }
 
       if (!profile) {
-        console.warn('[SupabaseService] Session restoration failed - profile missing for user:', data.user.id)
+        if (cachedUser && cachedUser.id === session.user.id) {
+          console.log('[SupabaseService] Profile record unreturned by ERP. Retaining cached user:', cachedUser.email)
+          activityTracker.onUserLogin(cachedUser)
+          return { success: true, user: cachedUser }
+        }
+        console.warn('[SupabaseService] Session restoration failed - profile missing for user:', session.user.id)
         await this.logout()
         return {
           success: false,
@@ -163,29 +327,33 @@ class SupabaseService {
       let designation = profile.designation || null
 
       if (profile.employee_id) {
-        const { data: onboarding } = await this.client
-          .from('employee_onboarding')
-          .select('employment_status, department, designation')
-          .eq('employee_id_number', profile.employee_id)
-          .maybeSingle()
+        try {
+          const { data: onboarding } = await this.client
+            .from('employee_onboarding')
+            .select('employment_status, department, designation')
+            .eq('employee_id_number', profile.employee_id)
+            .maybeSingle()
 
-        if (onboarding) {
-          if (onboarding.employment_status === 'Inactive' || onboarding.employment_status === 'Terminated') {
-            console.warn('[SupabaseService] Employee is inactive or terminated in onboarding. Revoking session.')
-            await this.logout()
-            return {
-              success: false,
-              error: 'Your employment status is inactive or terminated. Contact HR.'
+          if (onboarding) {
+            if (onboarding.employment_status === 'Inactive' || onboarding.employment_status === 'Terminated') {
+              console.warn('[SupabaseService] Employee is inactive or terminated in onboarding. Revoking session.')
+              await this.logout()
+              return {
+                success: false,
+                error: 'Your employment status is inactive or terminated. Contact HR.'
+              }
             }
+            if (onboarding.department) department = onboarding.department
+            if (onboarding.designation) designation = onboarding.designation
           }
-          if (onboarding.department) department = onboarding.department
-          if (onboarding.designation) designation = onboarding.designation
+        } catch (onboardingErr) {
+          console.warn('[SupabaseService] Non-fatal error checking onboarding:', onboardingErr)
         }
       }
 
       const userProfile: UserProfile = {
         id: profile.id,
-        email: data.user.email || '',
+        email: session.user.email || '',
         first_name: profile.first_name || 'Employee',
         last_name: profile.last_name || null,
         employee_id: profile.employee_id || null,
@@ -197,16 +365,20 @@ class SupabaseService {
 
       storage.setCurrentUser(userProfile)
 
-      if (data.session) {
+      if (session) {
         storage.setAuthTokens({
-          access_token: data.session.access_token,
-          refresh_token: data.session.refresh_token,
-          expires_at: data.session.expires_at
+          access_token: session.access_token,
+          refresh_token: session.refresh_token,
+          expires_at: session.expires_at
         })
       }
 
       // Synchronize this employee's active session and today's sessions from DB
-      await this.syncEmployeeSessionsFromSupabase(userProfile.id)
+      try {
+        await this.syncEmployeeSessionsFromSupabase(userProfile.id)
+      } catch (syncErr) {
+        console.warn('[SupabaseService] Non-fatal error during session sync on init:', syncErr)
+      }
 
       // Inform tracker that user session is active
       activityTracker.onUserLogin(userProfile)
@@ -217,15 +389,13 @@ class SupabaseService {
       return { success: true, user: userProfile }
     } catch (e: any) {
       console.warn('[SupabaseService] Exception during initSession:', e)
-      if (this.isNetworkError(e)) {
-        const cachedUser = storage.getCurrentUser()
-        if (cachedUser && cachedUser.id) {
-          activityTracker.onUserLogin(cachedUser)
-          return {
-            success: true,
-            user: cachedUser,
-            error: 'Offline mode: Network unavailable. Tracking will sync when connection is restored.'
-          }
+      const cachedUser = storage.getCurrentUser()
+      if (cachedUser && cachedUser.id) {
+        activityTracker.onUserLogin(cachedUser)
+        return {
+          success: true,
+          user: cachedUser,
+          error: 'Offline mode: Network unavailable. Tracking will sync when connection is restored.'
         }
       }
       return { success: false, error: e?.message || 'Authentication restoration failed' }
@@ -332,9 +502,9 @@ class SupabaseService {
     // 2. Inform activity tracker to reset in-memory buffers and emit clean 'Not Clocked In' state
     activityTracker.onUserLogout()
 
-    // 3. Sign out of Supabase
+    // 3. Sign out of Supabase locally
     try {
-      await this.client.auth.signOut()
+      await this.client.auth.signOut({ scope: 'local' })
     } catch (e) {
       console.warn('[SupabaseService] Error during auth signOut:', e)
     }
@@ -555,8 +725,8 @@ class SupabaseService {
         return { success: false, error: 'Session belongs to another employee. Operation rejected.' }
       }
 
-      const { data: { session: authSession } } = await this.client.auth.getSession()
-      if (!authSession) {
+      const isAuthValid = await this.ensureValidSession(session.employee_id)
+      if (!isAuthValid) {
         // Enqueue to offline queue for this employee
         storage.enqueuePending({
           id: `session-${session.id}`,
@@ -636,8 +806,15 @@ class SupabaseService {
         }
       }
 
-      // 3. Sync recent activity intervals in batch
-      const recentLogs = storage.getActivityLogs(session.employee_id, session.id).slice(-20)
+      // 3. Sync recent activity intervals in batch (only delta intervals)
+      const lastSynced = storage.getLastSynced(session.employee_id)
+      const lastSyncTime = lastSynced ? new Date(lastSynced).getTime() : 0
+      const allLogs = storage.getActivityLogs(session.employee_id, session.id)
+      const recentLogs = allLogs.filter(log => {
+        if (!lastSyncTime) return true
+        return new Date(log.end_time).getTime() > (lastSyncTime - 15000)
+      }).slice(-20)
+
       if (recentLogs.length > 0) {
         const logPayload = recentLogs.map(log => ({
           id: log.id,
@@ -649,21 +826,27 @@ class SupabaseService {
           app_name: log.app_name || 'Desktop Work',
           window_title: (log.window_title || '').slice(0, 255)
         }))
-        const { error: logErr } = await this.client.from('activity_logs').upsert(logPayload)
+        const { error: logErr } = await this.client
+          .from('activity_logs')
+          .upsert(logPayload, { onConflict: 'id', ignoreDuplicates: true })
         if (!logErr) {
           for (const log of recentLogs) {
             storage.removePending(`log-${log.id}`, session.employee_id)
           }
         } else {
-          for (const log of recentLogs) {
-            storage.enqueuePending({
-              id: `log-${log.id}`,
-              type: 'activity',
-              employee_id: session.employee_id,
-              data: log,
-              createdAt: new Date().toISOString(),
-              retries: 0
-            }, session.employee_id)
+          if (logErr.code === '42501' || logErr.message?.includes('row-level security')) {
+            console.warn('[SupabaseService] RLS rejected activity log batch:', logErr.message)
+          } else {
+            for (const log of recentLogs) {
+              storage.enqueuePending({
+                id: `log-${log.id}`,
+                type: 'activity',
+                employee_id: session.employee_id,
+                data: log,
+                createdAt: new Date().toISOString(),
+                retries: 0
+              }, session.employee_id)
+            }
           }
         }
       }
@@ -687,8 +870,8 @@ class SupabaseService {
       const queue = storage.getPendingQueue(empId)
       if (queue.length === 0) return
 
-      const { data: { session: authSession } } = await this.client.auth.getSession()
-      if (!authSession || authSession.user.id !== empId) return
+      const isAuthValid = await this.ensureValidSession(empId)
+      if (!isAuthValid) return
 
       for (const item of queue) {
         // Enforce ownership: only flush items matching the active authenticated employee
@@ -717,8 +900,14 @@ class SupabaseService {
             suspended_seconds: s.suspended_seconds || 0,
             updated_at: new Date().toISOString()
           })
-          if (!error) storage.removePending(item.id, empId)
-          else item.retries += 1
+          if (!error) {
+            storage.removePending(item.id, empId)
+          } else if (error.code === '42501' || error.message?.includes('row-level security')) {
+            console.warn('[SupabaseService] RLS rejected session in queue. Dropping item:', error.message)
+            storage.removePending(item.id, empId)
+          } else {
+            item.retries += 1
+          }
         } else if (item.type === 'break') {
           const b = item.data as BreakRecord
           const { error } = await this.client.from('session_breaks').upsert({
@@ -729,8 +918,14 @@ class SupabaseService {
             duration_minutes: b.duration_minutes,
             reason: b.reason || 'Break'
           })
-          if (!error) storage.removePending(item.id, empId)
-          else item.retries += 1
+          if (!error) {
+            storage.removePending(item.id, empId)
+          } else if (error.code === '42501' || error.message?.includes('row-level security')) {
+            console.warn('[SupabaseService] RLS rejected break in queue. Dropping item:', error.message)
+            storage.removePending(item.id, empId)
+          } else {
+            item.retries += 1
+          }
         } else if (item.type === 'activity') {
           const l = item.data as ActivityInterval
           if (l.employee_id !== empId) continue
@@ -744,9 +939,15 @@ class SupabaseService {
             active_seconds: l.active_seconds,
             app_name: l.app_name,
             window_title: (l.window_title || '').slice(0, 255)
-          })
-          if (!error) storage.removePending(item.id, empId)
-          else item.retries += 1
+          }, { onConflict: 'id', ignoreDuplicates: true })
+          if (!error) {
+            storage.removePending(item.id, empId)
+          } else if (error.code === '42501' || error.message?.includes('row-level security')) {
+            console.warn('[SupabaseService] RLS rejected activity log in queue. Dropping item:', error.message)
+            storage.removePending(item.id, empId)
+          } else {
+            item.retries += 1
+          }
         } else if (item.type === 'screenshot') {
           const { record, offlineFilePath } = item.data as { record: ScreenshotRecord; offlineFilePath?: string }
           if (record.employee_id !== empId) continue
@@ -1275,16 +1476,27 @@ class SupabaseService {
       if (!user) return { success: true }
 
       await this.flushPendingQueue(user.id)
-      const session = storage.getCurrentSession(user.id)
-      if (session) {
-        return await this.syncSession(session)
+
+      let lastResult: { success: boolean; error?: string } = { success: true }
+
+      // 1. Sync current active session
+      const currentSession = storage.getCurrentSession(user.id)
+      if (currentSession) {
+        lastResult = await this.syncSession(currentSession)
       }
+
+      // 2. Sync all today's sessions so total active and worked minutes are accurately recorded
       const todaySessions = storage.getTodaySessions(user.id)
-      if (todaySessions.length > 0) {
-        const lastSession = todaySessions[todaySessions.length - 1]
-        return await this.syncSession(lastSession)
+      for (const s of todaySessions) {
+        if (!currentSession || s.id !== currentSession.id) {
+          const res = await this.syncSession(s)
+          if (!res.success) {
+            lastResult = res
+          }
+        }
       }
-      return { success: true }
+
+      return lastResult
     } finally {
       this.isSyncingERP = false
     }

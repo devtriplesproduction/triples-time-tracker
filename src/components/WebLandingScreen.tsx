@@ -1,4 +1,5 @@
 import React, { useState } from 'react'
+import logoImg from '../assets/logo.png'
 import {
   Download,
   Monitor,
@@ -68,16 +69,14 @@ export const WebLandingScreen: React.FC<WebLandingScreenProps> = ({
         }}
       >
         <div className="flex items-center gap-3">
-          <div
-            className="w-9 h-9 rounded-xl flex items-center justify-center font-bold shadow-sm border"
+          <img
+            src={logoImg}
+            alt="TripleS Logo"
+            className="w-9 h-9 rounded-xl object-contain shrink-0 border shadow-sm bg-black p-1"
             style={{
-              backgroundColor: 'var(--btn-primary-bg)',
-              color: 'var(--btn-primary-text)',
               borderColor: 'var(--border-color)'
             }}
-          >
-            <Clock size={19} />
-          </div>
+          />
           <div>
             <div className="flex items-center gap-2">
               <span className="font-bold text-sm tracking-tight" style={{ color: 'var(--text-primary)' }}>

@@ -35,7 +35,8 @@ const DEFAULT_SETTINGS: AppSettings = {
   minimizeToTray: true,
   theme: 'dark',
   apiUrl: 'https://erp.triplesproduction.com',
-  timezone: 'Asia/Kolkata'
+  timezone: 'Asia/Kolkata',
+  launchOnStartup: true
 }
 
 class TrackerStorage {

@@ -63,6 +63,7 @@ class ScreenshotService {
       // Convert to JPEG with 70% quality (~80-150KB per capture)
       const jpegBuffer = screenSource.thumbnail.toJPEG(70)
       const size = screenSource.thumbnail.getSize()
+      sources.length = 0
 
       return {
         buffer: jpegBuffer,

@@ -262,12 +262,12 @@ class MidnightResetAuditHarness {
   }
 
   // Exact implementation logic matching TrackerStorage.validateActiveSession
-  public validateActiveSession(session: TrackingSession | null): TrackingSession | null {
+  public validateActiveSession(session: TrackingSession | null, nowMs?: number): TrackingSession | null {
     if (!session || !session.id) return null
     if (session.clock_out !== null && session.clock_out !== undefined) return null
     if (session.status === 'completed' || session.status === 'Completed') return null
 
-    const today = getDateString(new Date(), this.state.settings.timezone)
+    const today = getDateString(nowMs ? new Date(nowMs) : new Date(), this.state.settings.timezone)
     if (session.session_date && session.session_date !== today) {
       const tz = this.state.settings.timezone
       const { dayEndMs } = getDayBounds(session.session_date, tz)
@@ -669,7 +669,7 @@ describe('Audit: Automatic Midnight Reset Functionality', () => {
 
       // App restarts at 00:02 IST on Nov 17 (18:32 UTC Nov 16)
       // Simulate validateActiveSession on startup:
-      const validated = harness.validateActiveSession(activeSession)
+      const validated = harness.validateActiveSession(activeSession, new Date('2026-11-17T00:02:00+05:30').getTime())
 
       // Since employee was working right at midnight, validateActiveSession cleanly continues tracking:
       expect(validated).not.toBeNull()

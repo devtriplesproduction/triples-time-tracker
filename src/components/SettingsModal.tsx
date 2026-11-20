@@ -24,6 +24,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
 }) => {
   const [idleThreshold, setIdleThreshold] = useState(settings.idleThresholdSeconds || 60)
   const [minimizeToTray, setMinimizeToTray] = useState(settings.minimizeToTray)
+  const [launchOnStartup, setLaunchOnStartup] = useState(settings.launchOnStartup !== false)
   const [timezone, setTimezone] = useState(settings.timezone || 'Asia/Kolkata')
   const [syncing, setSyncing] = useState(false)
   const [saved, setSaved] = useState(false)
@@ -55,6 +56,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   React.useEffect(() => {
     setIdleThreshold(settings.idleThresholdSeconds || 60)
     setMinimizeToTray(settings.minimizeToTray)
+    setLaunchOnStartup(settings.launchOnStartup !== false)
     setTimezone(settings.timezone || 'Asia/Kolkata')
   }, [settings])
 
@@ -67,6 +69,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     setError(null)
     const payload: Partial<AppSettings> = {
       minimizeToTray,
+      launchOnStartup,
       timezone
     }
 
@@ -241,6 +244,22 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
               type="checkbox"
               checked={minimizeToTray}
               onChange={(e) => setMinimizeToTray(e.target.checked)}
+              className="w-4 h-4 rounded cursor-pointer accent-white"
+            />
+          </div>
+
+          {/* Launch on Windows Startup */}
+          <div className="flex items-center justify-between py-1">
+            <div>
+              <span className="font-semibold block">Launch on Windows Startup</span>
+              <span className="text-[11px]" style={{ color: 'var(--text-secondary)' }}>
+                Automatically open tracker when you start or log into your laptop
+              </span>
+            </div>
+            <input
+              type="checkbox"
+              checked={launchOnStartup}
+              onChange={(e) => setLaunchOnStartup(e.target.checked)}
               className="w-4 h-4 rounded cursor-pointer accent-white"
             />
           </div>

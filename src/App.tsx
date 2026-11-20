@@ -227,6 +227,15 @@ export const App: React.FC = () => {
             loadedUser = await window.electronAPI.getAuthUser()
           }
 
+          // Fallback check to persistent storage to prevent false login prompts if network was connecting
+          if (!loadedUser && window.electronAPI?.getAuthUser) {
+            const cachedUser = await window.electronAPI.getAuthUser()
+            if (cachedUser && cachedUser.id) {
+              console.log('[App] Restoring cached persistent user on startup:', cachedUser.email)
+              loadedUser = cachedUser
+            }
+          }
+
           if (loadedUser) {
             userRef.current = loadedUser
             setUser(loadedUser)

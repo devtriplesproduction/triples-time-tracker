@@ -28,10 +28,15 @@ class ActivityTracker {
   private lastIdleSeconds: number = 0
   private screenshotSecondsBuffer: number = 0
   private pendingContinuationSuspendedSeconds: number = 0
+  private onMinuteRolledOverCallbacks: Array<() => void> = []
 
   constructor() {
     this.currentBusinessDate = storage.getTodayBusinessDate()
     this.setupPowerMonitor()
+  }
+
+  public onMinuteRolledOver(cb: () => void) {
+    this.onMinuteRolledOverCallbacks.push(cb)
   }
 
   public getCurrentApp(): string {
@@ -484,6 +489,9 @@ class ActivityTracker {
     }
     if (minuteRolledOver) {
       console.log(`[ActivityTracker:Accumulator] Minute rollover: worked=${session.worked_minutes}m, active=${session.active_minutes}m (buffer: ${session.active_seconds_buffer}s), suspended=${session.suspended_seconds}s.`)
+      for (const cb of this.onMinuteRolledOverCallbacks) {
+        try { cb() } catch (err) { console.warn('[ActivityTracker] minuteRolledOver callback error:', err) }
+      }
     }
     if (this.tickCounter % 60 === 0) {
       console.log(`[ActivityTracker:Tick] Diagnostic checkpoint #${this.tickCounter}: status=${session.status}, idle=${idleSeconds}s (${isIdle ? 'IDLE' : 'ACTIVE'}), deltaMs=${Math.round(deltaMs)}ms, activeDeltaMs=${Math.round(activeDeltaMs)}ms, worked=${session.worked_minutes}m, active=${session.active_minutes}m:${session.active_seconds_buffer}s.`)

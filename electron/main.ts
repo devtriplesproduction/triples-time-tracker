@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, Tray, Menu, nativeImage, Notification, shell, powerMonitor } from 'electron'
+import { app, BrowserWindow, ipcMain, Tray, Menu, nativeImage, Notification, shell, powerMonitor, powerSaveBlocker } from 'electron'
 import path from 'path'
 import fs from 'fs'
 import { storage } from './storage'
@@ -8,15 +8,132 @@ import { screenshotService } from './screenshot-service'
 import type { AppSettings, ResetTimeParams, TimeResetAuditRecord } from '../src/types'
 import { calculateSessionWorkedSeconds } from '../src/utils/timeCalculator'
 
+// Prevent unhandled promise rejections and uncaught exceptions from terminating the application
+process.on('uncaughtException', (error) => {
+  console.error('[Main] Global uncaughtException intercepted:', error)
+})
+
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('[Main] Global unhandledRejection intercepted at:', promise, 'reason:', reason)
+})
+
 let mainWindow: BrowserWindow | null = null
 let tray: Tray | null = null
 let isQuitting = false
+let powerSaveBlockerId: number | null = null
+
+function updatePowerSaveBlocker(enable: boolean) {
+  try {
+    if (enable && powerSaveBlockerId === null) {
+      powerSaveBlockerId = powerSaveBlocker.start('prevent-app-suspension')
+      console.log(`[Main] powerSaveBlocker started (id: ${powerSaveBlockerId})`)
+    } else if (!enable && powerSaveBlockerId !== null) {
+      if (powerSaveBlocker.isStarted(powerSaveBlockerId)) {
+        powerSaveBlocker.stop(powerSaveBlockerId)
+        console.log(`[Main] powerSaveBlocker stopped (id: ${powerSaveBlockerId})`)
+      }
+      powerSaveBlockerId = null
+    }
+  } catch (err) {
+    console.warn('[Main] powerSaveBlocker error:', err)
+  }
+}
+
+function showAndFocusWindow() {
+  if (!mainWindow) return
+  if (mainWindow.isMinimized()) {
+    mainWindow.restore()
+  }
+  mainWindow.show()
+  mainWindow.setAlwaysOnTop(true)
+  mainWindow.focus()
+  mainWindow.setAlwaysOnTop(false)
+}
+
+function configureAutoLaunch(enable: boolean) {
+  try {
+    app.setLoginItemSettings({
+      openAtLogin: enable,
+      openAsHidden: false,
+      path: process.execPath,
+      args: []
+    })
+    console.log(`[Main] Windows startup auto-launch configured: ${enable}`)
+  } catch (err) {
+    console.warn('[Main] Failed to configure auto-launch:', err)
+  }
+}
+
+// Single instance lock to prevent duplicate tracker processes on startup
+if (process.platform === 'win32') {
+  app.setAppUserModelId('com.triples.timetracker')
+}
+
+const gotTheLock = app.requestSingleInstanceLock()
+
+if (!gotTheLock) {
+  console.log('[Main] Another instance is already running. Quitting duplicate instance.')
+  app.quit()
+} else {
+  app.on('second-instance', () => {
+    showAndFocusWindow()
+  })
+}
+
+function getAppIconPath(): string | undefined {
+  const candidates = [
+    path.join(__dirname, '../build/icon.ico'),
+    path.join(__dirname, '../public/icon.ico'),
+    path.join(__dirname, '../public/logo.png'),
+    path.join(__dirname, '../dist/logo.png'),
+    path.join(process.resourcesPath, 'build/icon.ico'),
+    path.join(process.resourcesPath, 'public/icon.ico'),
+    path.join(process.resourcesPath, 'dist/logo.png'),
+    path.join(process.resourcesPath, 'public/logo.png'),
+    path.join(app.getAppPath(), 'build/icon.ico'),
+    path.join(app.getAppPath(), 'public/icon.ico'),
+    path.join(app.getAppPath(), 'public/logo.png'),
+    path.join(app.getAppPath(), 'dist/logo.png')
+  ]
+
+  for (const candidate of candidates) {
+    if (fs.existsSync(candidate)) {
+      return candidate
+    }
+  }
+  return undefined
+}
+
+function getTrayIcon(): Electron.NativeImage {
+  const candidates = [
+    path.join(__dirname, '../public/logo.png'),
+    path.join(__dirname, '../dist/logo.png'),
+    path.join(__dirname, '../public/icon.ico'),
+    path.join(__dirname, '../build/icon.ico'),
+    path.join(process.resourcesPath, 'dist/logo.png'),
+    path.join(process.resourcesPath, 'public/logo.png'),
+    path.join(process.resourcesPath, 'public/icon.ico'),
+    path.join(app.getAppPath(), 'public/logo.png'),
+    path.join(app.getAppPath(), 'dist/logo.png')
+  ]
+
+  for (const candidate of candidates) {
+    if (fs.existsSync(candidate)) {
+      try {
+        const img = nativeImage.createFromPath(candidate)
+        if (!img.isEmpty()) {
+          return img.resize({ width: 16, height: 16 })
+        }
+      } catch {
+        // continue
+      }
+    }
+  }
+  return nativeImage.createEmpty()
+}
 
 function createTray() {
-  const iconPath = path.join(__dirname, '../public/logo.png')
-  const icon = fs.existsSync(iconPath)
-    ? nativeImage.createFromPath(iconPath).resize({ width: 16, height: 16 })
-    : nativeImage.createEmpty()
+  const icon = getTrayIcon()
   tray = new Tray(icon)
   tray.setToolTip('TripleS Time Tracker')
 
@@ -96,7 +213,7 @@ function createTray() {
 }
 
 function createWindow() {
-  const iconPath = path.join(__dirname, '../public/logo.png')
+  const iconPath = getAppIconPath()
   mainWindow = new BrowserWindow({
     width: 580,
     height: 600,
@@ -104,7 +221,7 @@ function createWindow() {
     minHeight: 520,
     resizable: true,
     frame: false,
-    icon: fs.existsSync(iconPath) ? iconPath : undefined,
+    icon: iconPath,
     backgroundColor: storage.getSettings().theme === 'light' ? '#F7F7F7' : '#050505',
     titleBarStyle: 'hidden',
     show: false,
@@ -115,6 +232,10 @@ function createWindow() {
       preload: path.join(__dirname, 'preload.js')
     }
   })
+
+  if (iconPath) {
+    mainWindow.setIcon(iconPath)
+  }
 
   // Set window in activity tracker
   activityTracker.setWindow(mainWindow)
@@ -129,36 +250,71 @@ function createWindow() {
     mainWindow?.show()
   })
 
-  mainWindow.on('close', (event) => {
-    const user = storage.getCurrentUser()
-    const session = user ? storage.getCurrentSession(user.id) : null
-    const settings = storage.getSettings()
+  // Recover automatically if the renderer process encounters an issue
+  mainWindow.webContents.on('render-process-gone', (_event, details) => {
+    console.error('[Main] Renderer process crashed or terminated:', details.reason)
+    if (!isQuitting && mainWindow && !mainWindow.isDestroyed()) {
+      console.log('[Main] Automatically recovering and reloading renderer window...')
+      if (process.env.VITE_DEV_SERVER_URL) {
+        mainWindow.loadURL(process.env.VITE_DEV_SERVER_URL)
+      } else {
+        mainWindow.loadFile(path.join(__dirname, '../dist/index.html'))
+      }
+    }
+  })
 
-    // If session is active and user didn't explicitly choose Quit, minimize to tray
-    if (!isQuitting && session && session.status !== 'Completed' && session.status !== 'completed' && settings.minimizeToTray) {
+  mainWindow.webContents.on('unresponsive', () => {
+    console.warn('[Main] Renderer window became temporarily unresponsive.')
+  })
+
+  mainWindow.on('close', (event) => {
+    // The application should NEVER close automatically!
+    // Closing the window (clicking X) minimizes/hides to system tray.
+    // The application only exits when the user explicitly clicks "Quit" from the tray menu.
+    if (!isQuitting) {
       event.preventDefault()
       mainWindow?.hide()
 
-      if (Notification.isSupported()) {
-        new Notification({
-          title: 'TripleS Time Tracker',
-          body: 'Tracking session is still active in the background.'
-        }).show()
+      const user = storage.getCurrentUser()
+      const session = user ? storage.getCurrentSession(user.id) : null
+      const settings = storage.getSettings()
+
+      if (session && session.status !== 'Completed' && session.status !== 'completed' && settings.minimizeToTray) {
+        if (Notification.isSupported()) {
+          new Notification({
+            title: 'TripleS Time Tracker',
+            body: 'Tracking session is still active in the background.'
+          }).show()
+        }
       }
+      return
     }
   })
 }
 
 // App lifecycle
 app.whenReady().then(async () => {
+  const settings = storage.getSettings()
+  configureAutoLaunch(settings.launchOnStartup !== false)
+  updatePowerSaveBlocker(true)
+
   await supabaseService.initSession()
   createTray()
   createWindow()
   activityTracker.start()
 
-  // Periodic ERP sync every 60 seconds
+  // Real-time ERP sync on every minute rollover
+  activityTracker.onMinuteRolledOver(() => {
+    supabaseService.syncWithERP().catch((err) => {
+      console.warn('[Main] Minute rollover ERP sync error:', err)
+    })
+  })
+
+  // Periodic ERP sync every 60 seconds with non-fatal error handler
   setInterval(() => {
-    supabaseService.syncWithERP()
+    supabaseService.syncWithERP().catch((err) => {
+      console.warn('[Main] Periodic ERP sync non-fatal error:', err)
+    })
   }, 60000)
 
   app.on('activate', () => {
@@ -166,24 +322,33 @@ app.whenReady().then(async () => {
       createWindow()
     }
   })
+
+  // When laptop opens / resumes from sleep or unlock, automatically bring tracker window to front
+  powerMonitor.on('resume', () => {
+    console.log('[Main] powerMonitor resume event received. Restoring and focusing tracker window.')
+    showAndFocusWindow()
+    supabaseService.syncWithERP().catch((err) => console.warn('[Main] Resume sync error:', err))
+  })
+
+  powerMonitor.on('unlock-screen', () => {
+    console.log('[Main] powerMonitor unlock-screen event received. Restoring and focusing tracker window.')
+    showAndFocusWindow()
+  })
+
   powerMonitor.on('shutdown', () => {
     console.log('[Main] powerMonitor shutdown event received.')
     activityTracker.handleSystemShutdown()
   })
 })
 
-;(app as any).on('session-end', () => {
-  console.log('[Main] app session-end event received.')
-  activityTracker.handleSystemShutdown()
-})
-
 app.on('before-quit', () => {
   isQuitting = true
+  updatePowerSaveBlocker(false)
   activityTracker.handleSystemShutdown()
 })
 
 app.on('window-all-closed', () => {
-  if (process.platform !== 'darwin' && isQuitting) {
+  if (isQuitting) {
     app.quit()
   }
 })
@@ -243,15 +408,24 @@ ipcMain.handle('tracker:clock-in', async () => {
     const syncRes = await supabaseService.syncSession(session)
 
     if (!syncRes.success) {
-      // If backend explicitly rejected the session (e.g. database error, RLS rejection),
-      // roll back and remain safely unclocked-in rather than pretending the operation succeeded.
-      console.warn('[Tracker] Backend session sync failed on clock-in:', syncRes.error)
-      storage.setCurrentSession(null, user.id)
-      storage.removePending(`session-${session.id}`, user.id)
-      const updatedToday = storage.getTodaySessions(user.id).filter(s => s.id !== session.id)
-      storage.setTodaySessions(updatedToday, user.id)
-      activityTracker.emitState()
-      return { success: false, error: syncRes.error || 'Failed to establish session on server' }
+      const errStr = (syncRes.error || '').toLowerCase()
+      const isFatalRejection = errStr.includes('row-level security') || 
+                               errStr.includes('42501') || 
+                               errStr.includes('deactivated') || 
+                               errStr.includes('terminated') ||
+                               errStr.includes('banned')
+
+      if (isFatalRejection) {
+        // Only roll back if backend explicitly and permanently rejected the employee/session
+        console.warn('[Tracker] Backend explicitly rejected session on clock-in:', syncRes.error)
+        storage.setCurrentSession(null, user.id)
+        storage.removePending(`session-${session.id}`, user.id)
+        const updatedToday = storage.getTodaySessions(user.id).filter(s => s.id !== session.id)
+        storage.setTodaySessions(updatedToday, user.id)
+        activityTracker.emitState()
+        return { success: false, error: syncRes.error || 'Failed to establish session on server' }
+      }
+      console.log('[Tracker] Clock-in confirmed locally and queued for background sync:', syncRes.error)
     }
 
     // Persist confirmed session in storage & emit authoritative state
@@ -483,6 +657,9 @@ ipcMain.handle('settings:save', (_event, updates: Partial<AppSettings>) => {
   }
 
   const updatedSettings = storage.updateSettings(updates)
+  if (typeof updates.launchOnStartup === 'boolean') {
+    configureAutoLaunch(updates.launchOnStartup)
+  }
   return { success: true, settings: updatedSettings }
 })
 

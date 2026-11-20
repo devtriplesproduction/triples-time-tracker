@@ -22,6 +22,8 @@
     "files": [
       "dist/**/*",
       "dist-electron/**/*",
+      "public/**/*",
+      "build/icon.ico",
       "scripts/**/*"
     ],
     "extraResources": [
@@ -31,7 +33,7 @@
       }
     ],
     "win": {
-      "signAndEditExecutable": false,
+      "icon": "build/icon.ico",
       "target": [
         {
           "target": "nsis"

@@ -131,6 +131,7 @@ export interface AppSettings {
   theme: 'dark' | 'light'
   apiUrl: string
   timezone?: string
+  launchOnStartup?: boolean
 }
 
 export interface ElectronAPI {
