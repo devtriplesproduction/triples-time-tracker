@@ -64,16 +64,36 @@ function configureAutoLaunch(enable: boolean) {
   }
 }
 
+// In development, isolate userData so npm run dev does not collide with the installed production app
+if (!app.isPackaged) {
+  try {
+    const devUserData = path.join(app.getPath('appData'), 'triples-time-tracker-dev')
+    app.setPath('userData', devUserData)
+
+    const devStorePath = path.join(devUserData, 'tracker-store.json')
+    const prodStorePath = path.join(app.getPath('appData'), 'triples-time-tracker', 'tracker-store.json')
+    if (!fs.existsSync(devStorePath) && fs.existsSync(prodStorePath)) {
+      if (!fs.existsSync(devUserData)) {
+        fs.mkdirSync(devUserData, { recursive: true })
+      }
+      fs.copyFileSync(prodStorePath, devStorePath)
+    }
+  } catch (err) {
+    console.warn('[Main] Non-fatal dev userData configuration error:', err)
+  }
+}
+
 // Single instance lock to prevent duplicate tracker processes on startup
 if (process.platform === 'win32') {
-  app.setAppUserModelId('com.triples.timetracker')
+  app.setAppUserModelId(app.isPackaged ? 'com.triples.timetracker' : 'com.triples.timetracker.dev')
 }
 
 const gotTheLock = app.requestSingleInstanceLock()
 
 if (!gotTheLock) {
   console.log('[Main] Another instance is already running. Quitting duplicate instance.')
-  app.quit()
+  app.exit(0)
+  process.exit(0)
 } else {
   app.on('second-instance', () => {
     showAndFocusWindow()
