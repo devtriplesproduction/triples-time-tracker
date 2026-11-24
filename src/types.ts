@@ -9,6 +9,15 @@ export interface BreakRecord {
   reason?: string
 }
 
+export interface MeetingRecord {
+  id: string
+  session_id: string
+  start_time: string
+  end_time: string | null
+  duration_minutes: number
+  title?: string
+}
+
 export interface ActivityInterval {
   id: string
   session_id: string
@@ -34,6 +43,8 @@ export interface TrackingSession {
   screenshot_seconds_buffer?: number
   last_heartbeat?: string
   breaks: BreakRecord[]
+  meetings?: MeetingRecord[]
+  is_in_meeting?: boolean
 }
 
 export interface UserProfile {
@@ -66,7 +77,7 @@ export interface ScreenshotRecord {
 
 export interface PendingSyncItem {
   id: string
-  type: 'session' | 'break' | 'activity' | 'screenshot' | 'leave' | 'bug' | 'reset_audit'
+  type: 'session' | 'break' | 'meeting' | 'activity' | 'screenshot' | 'leave' | 'bug' | 'reset_audit'
   employee_id?: string
   data: any
   createdAt: string
@@ -123,6 +134,7 @@ export interface TrackingState {
   totalBreakMs?: number
   suspendedMs?: number
   isTrackingActive?: boolean
+  isInMeeting?: boolean
 }
 
 export interface AppSettings {
@@ -144,6 +156,9 @@ export interface ElectronAPI {
   takeBreak: (reason?: string) => Promise<{ success: boolean; session?: TrackingSession; error?: string }>
   resumeBreak: () => Promise<{ success: boolean; session?: TrackingSession; error?: string }>
   clockOut: () => Promise<{ success: boolean; session?: TrackingSession; error?: string }>
+  toggleMeeting?: (isInMeeting?: boolean) => Promise<{ success: boolean; session?: TrackingSession; isInMeeting?: boolean; error?: string }>
+  startMeeting?: () => Promise<{ success: boolean; session?: TrackingSession; isInMeeting?: boolean; error?: string }>
+  endMeeting?: () => Promise<{ success: boolean; session?: TrackingSession; isInMeeting?: boolean; error?: string }>
   syncWithERP: () => Promise<{ success: boolean; error?: string }>
   syncSessions?: () => Promise<{ success: boolean; error?: string }>
   initSession?: () => Promise<{ success: boolean; user?: UserProfile; error?: string }>

@@ -1,5 +1,5 @@
 import React, { useState } from 'react'
-import { User as UserIcon } from 'lucide-react'
+import { User as UserIcon, Video, VideoOff } from 'lucide-react'
 import type { TrackingSession, TrackingStatus, UserProfile } from '../types'
 
 interface EmployeeTimerSectionProps {
@@ -7,6 +7,8 @@ interface EmployeeTimerSectionProps {
   currentSession: TrackingSession | null
   todaySessions?: TrackingSession[]
   status: TrackingStatus
+  isInMeeting?: boolean
+  onToggleMeeting?: () => Promise<void>
   onClockIn: () => Promise<void>
   onTakeBreak: () => Promise<void>
   onResume: () => Promise<void>
@@ -18,6 +20,8 @@ export const EmployeeTimerSection: React.FC<EmployeeTimerSectionProps> = React.m
   user,
   currentSession,
   status,
+  isInMeeting,
+  onToggleMeeting,
   onClockIn,
   onTakeBreak,
   onResume,
@@ -101,13 +105,15 @@ export const EmployeeTimerSection: React.FC<EmployeeTimerSectionProps> = React.m
             }`}
             style={{
               borderColor: 'var(--bg-primary)',
-              backgroundColor: isWorking
+              backgroundColor: isInMeeting
+                ? '#818CF8'
+                : isWorking
                 ? 'var(--status-green)'
                 : isOnBreak
                 ? 'var(--status-amber)'
                 : 'var(--text-muted)'
             }}
-            title={isWorking ? 'Working' : isOnBreak ? 'On Break' : 'Offline'}
+            title={isInMeeting ? 'In a Meeting' : isWorking ? 'Working' : isOnBreak ? 'On Break' : 'Offline'}
           />
         </div>
 
@@ -151,6 +157,37 @@ export const EmployeeTimerSection: React.FC<EmployeeTimerSectionProps> = React.m
           </button>
         ) : isWorking ? (
           <>
+            {/* In a Meeting / End Meeting Button */}
+            <button
+              onClick={() => onToggleMeeting && handleAction(onToggleMeeting)}
+              disabled={loading}
+              className={`px-3 py-2 rounded-lg font-bold text-xs transition-all shadow-sm active:scale-95 disabled:opacity-50 flex items-center gap-1.5 ${
+                isInMeeting ? 'text-white' : ''
+              }`}
+              style={{
+                backgroundColor: isInMeeting ? '#6366F1' : 'var(--bg-surface-elevated)',
+                color: isInMeeting ? '#FFFFFF' : 'var(--text-primary)',
+                border: isInMeeting ? '1px solid #4F46E5' : '1px solid var(--border-color)'
+              }}
+              title={
+                isInMeeting
+                  ? 'Meeting mode active: active time is calculated continuously without waiting for mouse or keyboard activity. Click to end meeting.'
+                  : 'Click when in a meeting to calculate active time without waiting for keystrokes or mouse interaction.'
+              }
+            >
+              {isInMeeting ? (
+                <>
+                  <VideoOff size={13} className="shrink-0" />
+                  <span>End Meeting</span>
+                </>
+              ) : (
+                <>
+                  <Video size={13} className="shrink-0 text-indigo-400" />
+                  <span>In a Meeting</span>
+                </>
+              )}
+            </button>
+
             {/* Take a Break (Yellow Button) */}
             <button
               onClick={() => handleAction(onTakeBreak)}

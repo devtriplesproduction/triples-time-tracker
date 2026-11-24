@@ -4,7 +4,7 @@ import fs from 'fs'
 import { storage } from './storage'
 import { activityTracker } from './activity-tracker'
 import { getKolkataDayBounds } from '../src/utils/timeCalculator'
-import type { UserProfile, TrackingSession, BreakRecord, ActivityInterval, PendingSyncItem, ScreenshotRecord, TimeResetAuditRecord } from '../src/types'
+import type { UserProfile, TrackingSession, BreakRecord, MeetingRecord, ActivityInterval, PendingSyncItem, ScreenshotRecord, TimeResetAuditRecord } from '../src/types'
 
 // Provide WebSocket implementation for Node.js / Electron main process
 if (typeof (globalThis as any).WebSocket === 'undefined') {
@@ -521,16 +521,30 @@ class SupabaseService {
     try {
       const today = storage.getTodayBusinessDate()
       // Query today's sessions or any open session for this employee (handling timezone or midnight boundary)
-      const { data: dbSessions, error } = await this.client
+      let dbSessions: any[] = []
+      const { data: queriedSessions, error } = await this.client
         .from('time_sessions')
-        .select('*, breaks:session_breaks(*)')
+        .select('*, breaks:session_breaks(*), meetings:session_meetings(*)')
         .eq('employee_id', employeeId)
         .or(`session_date.eq.${today},clock_out.is.null`)
         .order('clock_in', { ascending: true })
 
       if (error) {
-        console.warn(`[SupabaseService] Failed to fetch sessions for employee ${employeeId}:`, error.message)
-        return { success: false, error: error.message }
+        // Fallback without meetings relation in case session_meetings table isn't migrated yet
+        const { data: fallbackSessions, error: fallbackError } = await this.client
+          .from('time_sessions')
+          .select('*, breaks:session_breaks(*)')
+          .eq('employee_id', employeeId)
+          .or(`session_date.eq.${today},clock_out.is.null`)
+          .order('clock_in', { ascending: true })
+
+        if (fallbackError) {
+          console.warn(`[SupabaseService] Failed to fetch sessions for employee ${employeeId}:`, fallbackError.message)
+          return { success: false, error: fallbackError.message }
+        }
+        dbSessions = fallbackSessions || []
+      } else {
+        dbSessions = queriedSessions || []
       }
 
       // Check current local session
@@ -628,12 +642,20 @@ class SupabaseService {
             end_time: b.end_time || (s.session_date !== today ? clockOut : null),
             duration_minutes: b.duration_minutes || 0,
             reason: b.reason || 'Break'
+          })) : [],
+          meetings: Array.isArray(s.meetings) ? s.meetings.map((m: any) => ({
+            id: m.id,
+            session_id: m.session_id,
+            start_time: m.start_time,
+            end_time: m.end_time || (s.session_date !== today ? clockOut : null),
+            duration_minutes: m.duration_minutes || 0,
+            title: m.title || 'Meeting'
           })) : []
         }
       })
 
       const store = storage.getEmployeeData(employeeId)
-      // Merge dbSessions with existing local sessions preserving local precision, buffers and breaks
+      // Merge dbSessions with existing local sessions preserving local precision, buffers, breaks and meetings
       const mergedSessions: TrackingSession[] = formattedSessions.map((s: TrackingSession) => {
         const local = store.todaySessions.find(ls => ls.id === s.id)
         if (local) {
@@ -642,13 +664,15 @@ class SupabaseService {
           const mergedActiveSecondsBuffer = local.active_seconds_buffer || s.active_seconds_buffer || 0
           const mergedSuspendedSeconds = Math.max(s.suspended_seconds || 0, local.suspended_seconds || 0)
           const mergedBreaks = (local.breaks && local.breaks.length >= s.breaks.length) ? local.breaks : s.breaks
+          const mergedMeetings = (local.meetings && local.meetings.length >= (s.meetings?.length || 0)) ? local.meetings : (s.meetings || [])
           return {
             ...s,
             worked_minutes: mergedWorkedMinutes,
             active_minutes: mergedActiveMinutes,
             active_seconds_buffer: mergedActiveSecondsBuffer,
             suspended_seconds: mergedSuspendedSeconds,
-            breaks: mergedBreaks
+            breaks: mergedBreaks,
+            meetings: mergedMeetings
           }
         }
         return s
@@ -806,6 +830,35 @@ class SupabaseService {
         }
       }
 
+      // 2b. Sync meetings in batch
+      if (session.meetings && session.meetings.length > 0) {
+        const meetingPayload = session.meetings.map(m => ({
+          id: m.id,
+          session_id: session.id,
+          start_time: m.start_time,
+          end_time: m.end_time,
+          duration_minutes: m.duration_minutes,
+          title: m.title || 'Meeting'
+        }))
+        const { error: mErr } = await this.client.from('session_meetings').upsert(meetingPayload)
+        if (!mErr) {
+          for (const m of session.meetings) {
+            storage.removePending(`meeting-${m.id}`, session.employee_id)
+          }
+        } else {
+          for (const m of session.meetings) {
+            storage.enqueuePending({
+              id: `meeting-${m.id}`,
+              type: 'meeting',
+              employee_id: session.employee_id,
+              data: m,
+              createdAt: new Date().toISOString(),
+              retries: 0
+            }, session.employee_id)
+          }
+        }
+      }
+
       // 3. Sync recent activity intervals in batch (only delta intervals)
       const lastSynced = storage.getLastSynced(session.employee_id)
       const lastSyncTime = lastSynced ? new Date(lastSynced).getTime() : 0
@@ -922,6 +975,24 @@ class SupabaseService {
             storage.removePending(item.id, empId)
           } else if (error.code === '42501' || error.message?.includes('row-level security')) {
             console.warn('[SupabaseService] RLS rejected break in queue. Dropping item:', error.message)
+            storage.removePending(item.id, empId)
+          } else {
+            item.retries += 1
+          }
+        } else if (item.type === 'meeting') {
+          const m = item.data as MeetingRecord
+          const { error } = await this.client.from('session_meetings').upsert({
+            id: m.id,
+            session_id: m.session_id,
+            start_time: m.start_time,
+            end_time: m.end_time,
+            duration_minutes: m.duration_minutes,
+            title: m.title || 'Meeting'
+          })
+          if (!error) {
+            storage.removePending(item.id, empId)
+          } else if (error.code === '42501' || error.message?.includes('row-level security')) {
+            console.warn('[SupabaseService] RLS rejected meeting in queue. Dropping item:', error.message)
             storage.removePending(item.id, empId)
           } else {
             item.retries += 1
@@ -1367,7 +1438,7 @@ class SupabaseService {
           storage.removePending(`session-${session.id}`, empId)
         }
 
-        // Delete breaks for this session in Supabase since breaks were reset
+        // Delete breaks and meetings for this session in Supabase since session was reset
         try {
           await this.client
             .from('session_breaks')
@@ -1376,6 +1447,12 @@ class SupabaseService {
         } catch (e) {
           console.warn('[SupabaseService] Notice deleting reset breaks:', e)
         }
+        try {
+          await this.client
+            .from('session_meetings')
+            .delete()
+            .eq('session_id', session.id)
+        } catch (_) {}
 
         return { success: true }
       } else if (discardedSessionId) {
@@ -1399,6 +1476,12 @@ class SupabaseService {
         try {
           await this.client
             .from('session_breaks')
+            .delete()
+            .eq('session_id', discardedSessionId)
+        } catch (_) {}
+        try {
+          await this.client
+            .from('session_meetings')
             .delete()
             .eq('session_id', discardedSessionId)
         } catch (_) {}

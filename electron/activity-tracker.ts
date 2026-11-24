@@ -29,6 +29,8 @@ class ActivityTracker {
   private screenshotSecondsBuffer: number = 0
   private pendingContinuationSuspendedSeconds: number = 0
   private onMinuteRolledOverCallbacks: Array<() => void> = []
+  private onMeetingStateChangeCallbacks: Array<(inMeeting: boolean) => void> = []
+  private isInMeeting: boolean = false
 
   constructor() {
     this.currentBusinessDate = storage.getTodayBusinessDate()
@@ -39,12 +41,30 @@ class ActivityTracker {
     this.onMinuteRolledOverCallbacks.push(cb)
   }
 
+  public onMeetingStateChange(cb: (inMeeting: boolean) => void) {
+    this.onMeetingStateChangeCallbacks.push(cb)
+  }
+
+  private notifyMeetingState(inMeeting: boolean) {
+    for (const cb of this.onMeetingStateChangeCallbacks) {
+      try {
+        cb(inMeeting)
+      } catch (err) {
+        console.warn('[ActivityTracker] onMeetingStateChange error:', err)
+      }
+    }
+  }
+
   public getCurrentApp(): string {
     return this.currentApp
   }
 
   public getCurrentTitle(): string {
     return this.currentTitle
+  }
+
+  public getIsInMeeting(): boolean {
+    return this.isInMeeting
   }
 
   public setWindow(win: BrowserWindow | null) {
@@ -59,6 +79,8 @@ class ActivityTracker {
       if (typeof session.screenshot_seconds_buffer === 'number' && session.screenshot_seconds_buffer >= 0) {
         this.screenshotSecondsBuffer = session.screenshot_seconds_buffer
       }
+      this.isInMeeting = Boolean(session.is_in_meeting)
+      this.notifyMeetingState(this.isInMeeting)
     }
   }
 
@@ -90,16 +112,47 @@ class ActivityTracker {
               const day1Sec = Math.floor(day1SuspendedMs / 1000)
               const day2Sec = Math.floor(day2SuspendedMs / 1000)
 
-              session.suspended_seconds = (session.suspended_seconds || 0) + day1Sec
-              this.pendingContinuationSuspendedSeconds = (this.pendingContinuationSuspendedSeconds || 0) + day2Sec
-              console.log(`[ActivityTracker:State] Sleep spanned midnight. Day 1 suspended: ${day1Sec}s, Day 2 suspended: ${day2Sec}s.`)
+              if (this.isInMeeting) {
+                // Strict Midnight Only: credit meeting sleep time up to 12:00 AM midnight!
+                session.active_minutes += Math.floor(day1Sec / 60)
+                this.activeSecondsBuffer = (this.activeSecondsBuffer || 0) + (day1Sec % 60)
+                if (this.activeSecondsBuffer >= 60) {
+                  session.active_minutes += Math.floor(this.activeSecondsBuffer / 60)
+                  this.activeSecondsBuffer %= 60
+                }
+                this.pendingContinuationSuspendedSeconds = (this.pendingContinuationSuspendedSeconds || 0) + day2Sec
+                this.isInMeeting = false
+                session.is_in_meeting = false
+                this.notifyMeetingState(false)
+                console.log(`[ActivityTracker:Meeting] Spanned midnight: credited ${day1Sec}s of meeting time up to midnight. Day 2 (${day2Sec}s) suspended.`)
+              } else {
+                session.suspended_seconds = (session.suspended_seconds || 0) + day1Sec
+                this.pendingContinuationSuspendedSeconds = (this.pendingContinuationSuspendedSeconds || 0) + day2Sec
+                console.log(`[ActivityTracker:State] Sleep spanned midnight. Day 1 suspended: ${day1Sec}s, Day 2 suspended: ${day2Sec}s.`)
+              }
             } else {
               const suspendedDurationMs = Math.max(0, now - this.suspendStartTime)
               const addedSuspendedSec = Math.floor(suspendedDurationMs / 1000)
-              session.suspended_seconds = (session.suspended_seconds || 0) + addedSuspendedSec
-              console.log(`[ActivityTracker:State] Excluded ${addedSuspendedSec}s of sleep from employee ${user.id} worked duration. Total suspended: ${session.suspended_seconds}s.`)
+              if (this.isInMeeting) {
+                // Same day sleep during meeting: credit directly to active hours
+                session.active_minutes += Math.floor(addedSuspendedSec / 60)
+                this.activeSecondsBuffer = (this.activeSecondsBuffer || 0) + (addedSuspendedSec % 60)
+                if (this.activeSecondsBuffer >= 60) {
+                  session.active_minutes += Math.floor(this.activeSecondsBuffer / 60)
+                  this.activeSecondsBuffer %= 60
+                }
+                console.log(`[ActivityTracker:Meeting] Credited ${addedSuspendedSec}s of meeting sleep time to active hours.`)
+              } else {
+                session.suspended_seconds = (session.suspended_seconds || 0) + addedSuspendedSec
+                console.log(`[ActivityTracker:State] Excluded ${addedSuspendedSec}s of sleep from employee ${user.id} worked duration. Total suspended: ${session.suspended_seconds}s.`)
+              }
             }
-            storage.updateCurrentSession({ suspended_seconds: session.suspended_seconds }, user.id, true)
+            storage.updateCurrentSession({
+              suspended_seconds: session.suspended_seconds,
+              active_minutes: session.active_minutes,
+              active_seconds_buffer: session.active_seconds_buffer,
+              is_in_meeting: this.isInMeeting
+            }, user.id, true)
           }
         }
         this.suspendStartTime = null
@@ -165,9 +218,11 @@ class ActivityTracker {
     if (session) {
       this.activeSecondsBuffer = session.active_seconds_buffer || 0
       this.screenshotSecondsBuffer = session.screenshot_seconds_buffer || 0
+      this.isInMeeting = Boolean(session.is_in_meeting)
     } else {
       this.activeSecondsBuffer = 0
       this.screenshotSecondsBuffer = 0
+      this.isInMeeting = false
     }
     this.activeRemainderMs = 0
 
@@ -205,9 +260,11 @@ class ActivityTracker {
     if (session && (session.status === 'working' || session.status === 'Working' || session.status === 'on_break' || session.status === 'On Break')) {
       this.activeSecondsBuffer = session.active_seconds_buffer || 0
       this.screenshotSecondsBuffer = session.screenshot_seconds_buffer || 0
+      this.isInMeeting = Boolean(session.is_in_meeting)
     } else {
       this.activeSecondsBuffer = 0
       this.screenshotSecondsBuffer = 0
+      this.isInMeeting = false
     }
     this.activeRemainderMs = 0
     this.emitState()
@@ -222,6 +279,9 @@ class ActivityTracker {
     this.suspendStartTime = null
     this.isSuspended = false
     this.isScreenLocked = false
+    const wasInMeeting = this.isInMeeting
+    this.isInMeeting = false
+    if (wasInMeeting) this.notifyMeetingState(false)
     this.emitState()
   }
 
@@ -237,7 +297,7 @@ class ActivityTracker {
     // Performance Optimization: Skip spawning process when user is idle / away
     const settings = storage.getSettings()
     const idleSeconds = powerMonitor.getSystemIdleTime()
-    if (idleSeconds >= settings.idleThresholdSeconds) {
+    if (idleSeconds >= settings.idleThresholdSeconds && !this.isInMeeting) {
       return
     }
 
@@ -367,8 +427,30 @@ class ActivityTracker {
       console.warn(`[ActivityTracker:Tick] System clock anomaly/sleep detected (wall: ${deltaMs}ms vs monotonic: ${Math.round(monotonicDeltaMs)}ms, jump: ${clockJumpSec}s).`)
       // Only allocate clock jump to suspended_seconds if positive and NOT already on break
       if (clockJumpSec > 0 && !isOnBreak) {
-        session.suspended_seconds = Math.max(0, (session.suspended_seconds || 0) + clockJumpSec)
-        console.log(`[ActivityTracker:Tick] Excluded ${clockJumpSec}s of sleep from employee worked duration. Total suspended: ${session.suspended_seconds}s.`)
+        if (this.isInMeeting) {
+          const sessionDay = session.session_date || getDateString(new Date(session.clock_in), tz)
+          const { dayEndMs } = getDayBounds(sessionDay, tz)
+          const jumpStartMs = now - deltaMs
+          const creditEndMs = Math.min(now, dayEndMs)
+          const creditMs = Math.max(0, creditEndMs - jumpStartMs)
+          const creditSec = Math.floor(creditMs / 1000)
+
+          session.active_minutes += Math.floor(creditSec / 60)
+          this.activeSecondsBuffer = (this.activeSecondsBuffer || 0) + (creditSec % 60)
+          if (this.activeSecondsBuffer >= 60) {
+            session.active_minutes += Math.floor(this.activeSecondsBuffer / 60)
+            this.activeSecondsBuffer %= 60
+          }
+          if (now >= dayEndMs) {
+            this.isInMeeting = false
+            session.is_in_meeting = false
+            this.notifyMeetingState(false)
+          }
+          console.log(`[ActivityTracker:Meeting] Credited ${creditSec}s of meeting clock jump to active hours up to midnight.`)
+        } else {
+          session.suspended_seconds = Math.max(0, (session.suspended_seconds || 0) + clockJumpSec)
+          console.log(`[ActivityTracker:Tick] Excluded ${clockJumpSec}s of sleep from employee worked duration. Total suspended: ${session.suspended_seconds}s.`)
+        }
       }
       deltaMs = Math.max(0, monotonicDeltaMs)
     }
@@ -393,8 +475,11 @@ class ActivityTracker {
     let minuteRolledOver = false
     let activeDeltaMs = 0
 
-    if (isWorking && !isOnBreak && !this.isSuspended && !this.isScreenLocked) {
-      if (!isIdle) {
+    if (isWorking && !isOnBreak && !this.isSuspended && (!this.isScreenLocked || this.isInMeeting)) {
+      if (this.isInMeeting) {
+        // Continuous active time calculation in meeting mode without waiting for keystrokes or mouse interaction
+        activeDeltaMs = deltaMs
+      } else if (!isIdle) {
         if (this.lastEmittedIdle) {
           // Transition from Idle -> Active: user resumed activity
           const activeSinceInputMs = idleSeconds > 0 ? Math.round(idleSeconds * 1000) : deltaMs
@@ -439,8 +524,8 @@ class ActivityTracker {
             start_time: new Date(now - 60000).toISOString(),
             end_time: new Date(now).toISOString(),
             active_seconds: 60,
-            app_name: this.currentApp || 'Desktop Work',
-            window_title: this.currentTitle || ''
+            app_name: this.isInMeeting ? (this.currentApp ? `Meeting - ${this.currentApp}` : 'In a Meeting') : (this.currentApp || 'Desktop Work'),
+            window_title: this.isInMeeting ? (this.currentTitle || 'In a Meeting') : (this.currentTitle || '')
           }
           storage.addActivityInterval(interval)
         }
@@ -468,20 +553,23 @@ class ActivityTracker {
 
     session.active_seconds_buffer = Math.floor(this.activeSecondsBuffer)
     session.screenshot_seconds_buffer = Math.round(this.screenshotSecondsBuffer)
+    session.is_in_meeting = this.isInMeeting
     storage.updateCurrentSession({
       worked_minutes: session.worked_minutes,
       active_minutes: session.active_minutes,
       suspended_seconds: session.suspended_seconds || 0,
       active_seconds_buffer: session.active_seconds_buffer,
       screenshot_seconds_buffer: session.screenshot_seconds_buffer,
-      last_heartbeat: session.last_heartbeat
+      last_heartbeat: session.last_heartbeat,
+      is_in_meeting: this.isInMeeting
     }, user.id, minuteRolledOver)
 
     this.tickCounter += 1
-    const idleChanged = isIdle !== this.lastEmittedIdle
+    const effectiveIdle = this.isInMeeting ? false : isIdle
+    const idleChanged = effectiveIdle !== this.lastEmittedIdle
     const wasIdle = this.lastEmittedIdle
-    this.lastEmittedIdle = isIdle
-    this.lastIdleSeconds = idleSeconds
+    this.lastEmittedIdle = effectiveIdle
+    this.lastIdleSeconds = this.isInMeeting ? 0 : idleSeconds
 
     // Diagnostic logging
     if (idleChanged) {
@@ -527,7 +615,8 @@ class ActivityTracker {
         sessionClockInMs: null,
         totalBreakMs: 0,
         suspendedMs: 0,
-        isTrackingActive: false
+        isTrackingActive: false,
+        isInMeeting: false
       }
     }
 
@@ -552,7 +641,9 @@ class ActivityTracker {
     }
 
     const isWorking = status === 'working'
-    const isTrackingActive = Boolean(isWorking && !isIdle && !this.isSuspended && !this.isScreenLocked)
+    const hasOpenBreak = Boolean(session?.breaks && session.breaks.some(b => b.end_time === null))
+    const isInMeeting = Boolean((this.isInMeeting || session?.is_in_meeting) && isWorking && !hasOpenBreak)
+    const isTrackingActive = Boolean(isWorking && (!isIdle || isInMeeting) && !this.isSuspended && (!this.isScreenLocked || isInMeeting))
 
     let totalBreakMs = 0
     if (session && Array.isArray(session.breaks)) {
@@ -573,9 +664,9 @@ class ActivityTracker {
       todayWorkedSeconds,
       todayActiveSeconds,
       todaySessions,
-      activeAppName: this.currentApp,
-      isIdle,
-      idleSeconds,
+      activeAppName: isInMeeting ? (this.currentApp ? `Meeting - ${this.currentApp}` : 'In a Meeting') : this.currentApp,
+      isIdle: isInMeeting ? false : isIdle,
+      idleSeconds: isInMeeting ? 0 : idleSeconds,
       lastActivityTime: new Date(serverTimestamp).toISOString(),
       isOnline: true,
       lastSyncedAt: storage.getLastSynced(empId),
@@ -584,7 +675,8 @@ class ActivityTracker {
       sessionClockInMs,
       totalBreakMs,
       suspendedMs,
-      isTrackingActive
+      isTrackingActive,
+      isInMeeting
     }
   }
 
@@ -623,9 +715,12 @@ class ActivityTracker {
       active_seconds_buffer: 0,
       screenshot_seconds_buffer: this.screenshotSecondsBuffer,
       last_heartbeat: nowIso,
-      breaks: []
+      breaks: [],
+      meetings: [],
+      is_in_meeting: false
     }
 
+    this.isInMeeting = false
     this.lastTickTime = Date.now()
     this.lastHrTime = process.hrtime.bigint()
     this.currentBusinessDate = today
@@ -664,10 +759,26 @@ class ActivityTracker {
 
     session.breaks.push(newBreak)
     session.status = 'on_break'
+    if (session.meetings) {
+      const openMeeting = session.meetings.find(m => m.end_time === null)
+      if (openMeeting) {
+        const nowIso = new Date().toISOString()
+        openMeeting.end_time = nowIso
+        const startMs = new Date(openMeeting.start_time).getTime()
+        const endMs = new Date(nowIso).getTime()
+        openMeeting.duration_minutes = Math.max(0, Math.floor((endMs - startMs) / 60000))
+      }
+    }
+    session.is_in_meeting = false
+    const wasInMeeting = this.isInMeeting
+    this.isInMeeting = false
+    if (wasInMeeting) this.notifyMeetingState(false)
     storage.updateCurrentSession({
       status: 'on_break',
       breaks: session.breaks,
-      active_seconds_buffer: Math.round(this.activeSecondsBuffer)
+      meetings: session.meetings,
+      active_seconds_buffer: Math.round(this.activeSecondsBuffer),
+      is_in_meeting: false
     }, empId, true)
 
     console.log(`[ActivityTracker:State] Employee ${empId} took break: ${newBreak.reason}. Active buffer preserved at ${this.activeSecondsBuffer}s.`)
@@ -697,13 +808,18 @@ class ActivityTracker {
     }
 
     session.status = 'working'
+    session.is_in_meeting = false
+    const wasInMeeting = this.isInMeeting
+    this.isInMeeting = false
+    if (wasInMeeting) this.notifyMeetingState(false)
     this.lastTickTime = Date.now()
     this.lastHrTime = process.hrtime.bigint()
 
     storage.updateCurrentSession({
       status: 'working',
       breaks: session.breaks,
-      active_seconds_buffer: Math.round(this.activeSecondsBuffer)
+      active_seconds_buffer: Math.round(this.activeSecondsBuffer),
+      is_in_meeting: false
     }, empId, true)
 
     console.log(`[ActivityTracker:State] Employee ${empId} resumed work from break. Active buffer preserved at ${this.activeSecondsBuffer}s.`)
@@ -729,6 +845,17 @@ class ActivityTracker {
       ongoingBreak.duration_minutes = Math.max(0, Math.floor((now.getTime() - startMs) / 60000))
     }
 
+    if (session.meetings) {
+      const openMeeting = session.meetings.find(m => m.end_time === null)
+      if (openMeeting) {
+        const nowIso = now.toISOString()
+        openMeeting.end_time = nowIso
+        const startMs = new Date(openMeeting.start_time).getTime()
+        const endMs = now.getTime()
+        openMeeting.duration_minutes = Math.max(0, Math.floor((endMs - startMs) / 60000))
+      }
+    }
+
     // Roll over any full minutes remaining in activeSecondsBuffer
     if (this.activeSecondsBuffer >= 60) {
       const extraMinutes = Math.floor(this.activeSecondsBuffer / 60)
@@ -739,6 +866,10 @@ class ActivityTracker {
     session.clock_out = now.toISOString()
     session.status = 'completed'
     session.last_heartbeat = now.toISOString()
+    session.is_in_meeting = false
+    const wasInMeeting = this.isInMeeting
+    this.isInMeeting = false
+    if (wasInMeeting) this.notifyMeetingState(false)
 
     const clockInTime = new Date(session.clock_in).getTime()
     let totalBreakMs = 0
@@ -798,6 +929,7 @@ class ActivityTracker {
     const previousActiveSeconds = (currentSession.active_minutes || 0) * 60 + (this.activeSecondsBuffer || 0)
 
     // Reset in-memory buffers and monotonic timers
+    this.isInMeeting = false
     this.activeSecondsBuffer = 0
     this.activeRemainderMs = 0
     this.screenshotSecondsBuffer = 0
@@ -816,6 +948,90 @@ class ActivityTracker {
       previousSession: result.previousSession,
       previousWorkedSeconds,
       previousActiveSeconds
+    }
+  }
+
+  public startMeeting(employeeId?: string): { success: boolean; session?: TrackingSession; isInMeeting: boolean; error?: string } {
+    const user = storage.getCurrentUser()
+    const empId = employeeId || user?.id
+    if (!empId) {
+      return { success: false, isInMeeting: false, error: 'Authentication required' }
+    }
+
+    const session = storage.getCurrentSession(empId)
+    if (!session || session.employee_id !== empId) {
+      return { success: false, isInMeeting: false, error: 'No active session found' }
+    }
+
+    const isWorking = (session.status === 'Working' || session.status === 'working') && !session.breaks.some(b => b.end_time === null)
+    if (!isWorking) {
+      return { success: false, isInMeeting: false, error: 'Cannot start meeting: session is not in working state' }
+    }
+
+    this.isInMeeting = true
+    session.is_in_meeting = true
+    if (!session.meetings) session.meetings = []
+    const hasOpenMeeting = session.meetings.some(m => m.end_time === null)
+    if (!hasOpenMeeting) {
+      session.meetings.push({
+        id: crypto.randomUUID(),
+        session_id: session.id,
+        start_time: new Date().toISOString(),
+        end_time: null,
+        duration_minutes: 0,
+        title: 'Meeting'
+      })
+    }
+    this.notifyMeetingState(true)
+    this.lastTickTime = Date.now()
+    this.lastHrTime = process.hrtime.bigint()
+    storage.updateCurrentSession({ is_in_meeting: true, meetings: session.meetings }, empId, true)
+    console.log(`[ActivityTracker:Meeting] Employee ${empId} entered meeting mode. Active time calculating continuously without waiting for input.`)
+    this.emitState()
+    return { success: true, session, isInMeeting: true }
+  }
+
+  public endMeeting(employeeId?: string): { success: boolean; session?: TrackingSession; isInMeeting: boolean; error?: string } {
+    const user = storage.getCurrentUser()
+    const empId = employeeId || user?.id
+    if (!empId) {
+      return { success: false, isInMeeting: false, error: 'Authentication required' }
+    }
+
+    const session = storage.getCurrentSession(empId)
+    if (!session || session.employee_id !== empId) {
+      this.isInMeeting = false
+      this.emitState()
+      return { success: true, isInMeeting: false }
+    }
+
+    this.isInMeeting = false
+    session.is_in_meeting = false
+    if (session.meetings) {
+      const openMeeting = session.meetings.find(m => m.end_time === null)
+      if (openMeeting) {
+        const nowIso = new Date().toISOString()
+        openMeeting.end_time = nowIso
+        const startMs = new Date(openMeeting.start_time).getTime()
+        const endMs = new Date(nowIso).getTime()
+        openMeeting.duration_minutes = Math.max(0, Math.floor((endMs - startMs) / 60000))
+      }
+    }
+    this.notifyMeetingState(false)
+    this.lastTickTime = Date.now()
+    this.lastHrTime = process.hrtime.bigint()
+    storage.updateCurrentSession({ is_in_meeting: false, meetings: session.meetings }, empId, true)
+    console.log(`[ActivityTracker:Meeting] Employee ${empId} ended meeting mode.`)
+    this.emitState()
+    return { success: true, session, isInMeeting: false }
+  }
+
+  public toggleMeeting(employeeId?: string, forceState?: boolean): { success: boolean; session?: TrackingSession; isInMeeting: boolean; error?: string } {
+    const shouldStart = forceState !== undefined ? forceState : !this.isInMeeting
+    if (shouldStart) {
+      return this.startMeeting(employeeId)
+    } else {
+      return this.endMeeting(employeeId)
     }
   }
 
@@ -1119,6 +1335,7 @@ class ActivityTracker {
 
     // 5. Mark duplicate prevention flag and reset buffers
     store.lastRolloverDate = newDay
+    this.isInMeeting = false
     this.activeSecondsBuffer = 0
     this.activeRemainderMs = 0
     this.screenshotSecondsBuffer = 0

@@ -15,6 +15,7 @@ interface DailyMetricCardsProps {
   serverTimestamp?: number
   isTrackingActive?: boolean
   isIdle?: boolean
+  isInMeeting?: boolean
 }
 
 export const DailyMetricCards: React.FC<DailyMetricCardsProps> = React.memo(({
@@ -25,7 +26,8 @@ export const DailyMetricCards: React.FC<DailyMetricCardsProps> = React.memo(({
   backendActiveSeconds,
   serverTimestamp,
   isTrackingActive,
-  isIdle
+  isIdle,
+  isInMeeting
 }) => {
   const [displayedWorkedSeconds, setDisplayedWorkedSeconds] = useState<number>(() => backendWorkedSeconds ?? 0)
   const [displayedActiveSeconds, setDisplayedActiveSeconds] = useState<number>(() => backendActiveSeconds ?? 0)
@@ -33,7 +35,7 @@ export const DailyMetricCards: React.FC<DailyMetricCardsProps> = React.memo(({
   const isWorking = (status === 'working' || status === 'Working') && !currentSession?.breaks?.some(b => b.end_time === null)
   const activelyTracking = isTrackingActive !== undefined
     ? isTrackingActive
-    : Boolean(isWorking && !isIdle)
+    : Boolean(isWorking && (!isIdle || isInMeeting))
 
   const baselineRef = useRef<{
     serverTimestamp: number

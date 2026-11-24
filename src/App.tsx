@@ -35,6 +35,7 @@ export const App: React.FC = () => {
   const [todayActiveSeconds, setTodayActiveSeconds] = useState<number>(0)
   const [serverTimestamp, setServerTimestamp] = useState<number>(Date.now())
   const [isIdle, setIsIdle] = useState<boolean>(false)
+  const [isInMeeting, setIsInMeeting] = useState<boolean>(false)
   const [isTrackingActive, setIsTrackingActive] = useState<boolean>(false)
   const [pendingSyncCount, setPendingSyncCount] = useState<number>(0)
   const [isOnline, setIsOnline] = useState<boolean>(true)
@@ -118,6 +119,7 @@ export const App: React.FC = () => {
       setTodayActiveSeconds(0)
       setServerTimestamp(Date.now())
       setIsIdle(false)
+      setIsInMeeting(false)
       setIsTrackingActive(false)
       setPendingSyncCount(0)
       return
@@ -164,9 +166,11 @@ export const App: React.FC = () => {
     setTodayActiveSeconds((prev) => (prev === calcActiveSec ? prev : calcActiveSec))
     setServerTimestamp((prev) => (state.serverTimestamp && state.serverTimestamp !== prev ? state.serverTimestamp : prev))
     setIsIdle((prev) => (state.isIdle !== undefined && state.isIdle !== prev ? state.isIdle : prev))
+    const currentInMeeting = Boolean(validSession?.is_in_meeting ?? state.isInMeeting)
+    setIsInMeeting((prev) => (prev !== currentInMeeting ? currentInMeeting : prev))
     const calcIsActive = state.isTrackingActive !== undefined
       ? state.isTrackingActive
-      : Boolean(targetStatus === 'working' && !state.isIdle)
+      : Boolean(targetStatus === 'working' && (!state.isIdle || currentInMeeting))
     setIsTrackingActive((prev) => (prev !== calcIsActive ? calcIsActive : prev))
 
     if (state.todaySessions) {
@@ -363,6 +367,7 @@ export const App: React.FC = () => {
     }
 
     const previousStatus = status
+    const previousMeeting = isInMeeting
     const previousSession = JSON.parse(JSON.stringify(currentSession))
 
     // 1. Immediately update UI (Optimistic update)
@@ -379,9 +384,11 @@ export const App: React.FC = () => {
     const updatedSession = {
       ...currentSession,
       status: 'on_break' as TrackingStatus,
+      is_in_meeting: false,
       breaks: [...currentSession.breaks, optimisticBreak]
     }
 
+    setIsInMeeting(false)
     setStatus('on_break')
     setCurrentSession(updatedSession)
     setTodaySessions((prev) =>
@@ -394,6 +401,7 @@ export const App: React.FC = () => {
       if (window.electronAPI) {
         const res = await window.electronAPI.takeBreak()
         if (!res.success) {
+          setIsInMeeting(previousMeeting)
           setStatus(previousStatus)
           setCurrentSession(previousSession)
           setTodaySessions((prev) =>
@@ -411,6 +419,7 @@ export const App: React.FC = () => {
         }
       }
     } catch (err: any) {
+      setIsInMeeting(previousMeeting)
       setStatus(previousStatus)
       setCurrentSession(previousSession)
       setTodaySessions((prev) =>
@@ -448,9 +457,11 @@ export const App: React.FC = () => {
     const updatedSession = {
       ...currentSession,
       status: 'working' as TrackingStatus,
+      is_in_meeting: false,
       breaks: updatedBreaks
     }
 
+    setIsInMeeting(false)
     setStatus('working')
     setCurrentSession(updatedSession)
     setTodaySessions((prev) =>
@@ -491,6 +502,7 @@ export const App: React.FC = () => {
   }
 
   const handleClockOut = async () => {
+    setIsInMeeting(false)
     if (window.electronAPI) {
       const res = await window.electronAPI.clockOut()
       if (res && res.session) {
@@ -510,6 +522,49 @@ export const App: React.FC = () => {
       setStatus('Completed')
       if (currentSession) {
         currentSession.status = 'Completed'
+      }
+    }
+  }
+
+  const handleToggleMeeting = async () => {
+    if (!currentSession) return
+    const isWorking = status === 'Working' || status === 'working'
+    if (!isWorking) return
+
+    const nextMeetingState = !isInMeeting
+    const previousMeetingState = isInMeeting
+
+    // 1. Optimistic UI update
+    setIsInMeeting(nextMeetingState)
+    setCurrentSession((prev) => (prev ? { ...prev, is_in_meeting: nextMeetingState } : null))
+    setTodaySessions((prev) =>
+      prev.map((s) => (s.id === currentSession.id ? { ...s, is_in_meeting: nextMeetingState } : s))
+    )
+
+    // 2. Update via Electron backend
+    if (window.electronAPI?.toggleMeeting) {
+      try {
+        const res = await window.electronAPI.toggleMeeting(nextMeetingState)
+        if (!res.success) {
+          setIsInMeeting(previousMeetingState)
+          setCurrentSession((prev) => (prev ? { ...prev, is_in_meeting: previousMeetingState } : null))
+          setTodaySessions((prev) =>
+            prev.map((s) => (s.id === currentSession.id ? { ...s, is_in_meeting: previousMeetingState } : s))
+          )
+          setErrorMessage(res.error || 'Failed to update meeting mode')
+          setTimeout(() => setErrorMessage(null), 5000)
+        } else if (res.session) {
+          setCurrentSession(res.session)
+          setIsInMeeting(Boolean(res.isInMeeting ?? res.session.is_in_meeting))
+        }
+      } catch (err: any) {
+        setIsInMeeting(previousMeetingState)
+        setCurrentSession((prev) => (prev ? { ...prev, is_in_meeting: previousMeetingState } : null))
+        setTodaySessions((prev) =>
+          prev.map((s) => (s.id === currentSession.id ? { ...s, is_in_meeting: previousMeetingState } : s))
+        )
+        setErrorMessage(err.message || 'Error updating meeting mode')
+        setTimeout(() => setErrorMessage(null), 5000)
       }
     }
   }
@@ -550,6 +605,7 @@ export const App: React.FC = () => {
     setTodayActiveSeconds(0)
     setServerTimestamp(Date.now())
     setIsIdle(false)
+    setIsInMeeting(false)
     setIsTrackingActive(false)
     setPendingSyncCount(0)
     setAuthError(null)
@@ -716,6 +772,8 @@ export const App: React.FC = () => {
             currentSession={currentSession}
             todaySessions={todaySessions}
             status={status}
+            isInMeeting={isInMeeting}
+            onToggleMeeting={handleToggleMeeting}
             onClockIn={handleClockIn}
             onTakeBreak={handleTakeBreak}
             onResume={handleResume}
@@ -725,7 +783,7 @@ export const App: React.FC = () => {
 
           {/* 4. Center Content (Greeting, Work-Status & Daily Metrics) */}
           <div className="flex-1 flex flex-col justify-center items-center overflow-hidden px-4">
-            <CenterGreeting user={user} status={status} currentSession={currentSession} />
+            <CenterGreeting user={user} status={status} currentSession={currentSession} isInMeeting={isInMeeting} />
 
             {/* 5. Daily Metrics (Worked Hours & Active Hours positioned 50-80px below status) */}
             <div className="mt-14 flex justify-center w-full">
@@ -738,6 +796,7 @@ export const App: React.FC = () => {
                 serverTimestamp={serverTimestamp}
                 isTrackingActive={isTrackingActive}
                 isIdle={isIdle}
+                isInMeeting={isInMeeting}
               />
             </div>
           </div>

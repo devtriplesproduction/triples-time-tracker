@@ -6,9 +6,10 @@ interface CenterGreetingProps {
   user: UserProfile | null
   status: TrackingStatus
   currentSession?: TrackingSession | null
+  isInMeeting?: boolean
 }
 
-export const CenterGreeting: React.FC<CenterGreetingProps> = React.memo(({ user, status, currentSession }) => {
+export const CenterGreeting: React.FC<CenterGreetingProps> = React.memo(({ user, status, currentSession, isInMeeting }) => {
   const [greetingText, setGreetingText] = useState<string>('')
 
   // Strictly validate active session ownership and non-terminated status
@@ -55,7 +56,12 @@ export const CenterGreeting: React.FC<CenterGreetingProps> = React.memo(({ user,
 
       {/* Dynamic Work-Status Message */}
       <div className="text-sm font-medium tracking-wide">
-        {isWorking ? (
+        {isInMeeting ? (
+          <span style={{ color: '#818CF8' }} className="flex items-center justify-center gap-1.5">
+            <span className="w-2 h-2 rounded-full bg-indigo-400 animate-pulse inline-block" />
+            You are currently <strong className="font-bold">in a meeting</strong>
+          </span>
+        ) : isWorking ? (
           <span style={{ color: 'var(--status-green)' }}>
             You are currently <strong className="font-bold">working</strong>
           </span>

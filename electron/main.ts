@@ -21,6 +21,25 @@ let mainWindow: BrowserWindow | null = null
 let tray: Tray | null = null
 let isQuitting = false
 let powerSaveBlockerId: number | null = null
+let meetingPowerSaveBlockerId: number | null = null
+
+function updateMeetingSleepBlocker(enable: boolean) {
+  try {
+    if (enable && meetingPowerSaveBlockerId === null) {
+      // 'prevent-display-sleep' completely blocks Windows from turning off the display and entering sleep mode
+      meetingPowerSaveBlockerId = powerSaveBlocker.start('prevent-display-sleep')
+      console.log(`[Main] Meeting sleep blocker started (id: ${meetingPowerSaveBlockerId}) - Windows sleep and display sleep blocked during meeting.`)
+    } else if (!enable && meetingPowerSaveBlockerId !== null) {
+      if (powerSaveBlocker.isStarted(meetingPowerSaveBlockerId)) {
+        powerSaveBlocker.stop(meetingPowerSaveBlockerId)
+        console.log(`[Main] Meeting sleep blocker stopped (id: ${meetingPowerSaveBlockerId}).`)
+      }
+      meetingPowerSaveBlockerId = null
+    }
+  } catch (err) {
+    console.warn('[Main] Meeting sleep blocker error:', err)
+  }
+}
 
 function updatePowerSaveBlocker(enable: boolean) {
   try {
@@ -162,6 +181,7 @@ function createTray() {
     const session = user ? storage.getCurrentSession(user.id) : null
     const isWorking = session?.status === 'Working' || session?.status === 'working'
     const isOnBreak = session?.status === 'On Break' || session?.status === 'on_break'
+    const isInMeeting = activityTracker.getIsInMeeting()
 
     const contextMenu = Menu.buildFromTemplate([
       {
@@ -192,6 +212,22 @@ function createTray() {
           } else {
             activityTracker.clockIn(currentUser.id)
           }
+          updateContextMenu()
+        }
+      },
+      {
+        label: isInMeeting ? 'End Meeting' : 'In a Meeting',
+        enabled: isWorking && !isOnBreak,
+        click: () => {
+          const currentUser = storage.getCurrentUser()
+          if (!currentUser || !currentUser.id) {
+            if (mainWindow) {
+              mainWindow.show()
+              mainWindow.focus()
+            }
+            return
+          }
+          activityTracker.toggleMeeting(currentUser.id)
           updateContextMenu()
         }
       },
@@ -323,6 +359,11 @@ app.whenReady().then(async () => {
   createWindow()
   activityTracker.start()
 
+  // Actively block Windows from sleeping when employee is in a meeting
+  activityTracker.onMeetingStateChange((inMeeting: boolean) => {
+    updateMeetingSleepBlocker(inMeeting)
+  })
+
   // Real-time ERP sync on every minute rollover
   activityTracker.onMinuteRolledOver(() => {
     supabaseService.syncWithERP().catch((err) => {
@@ -363,6 +404,7 @@ app.whenReady().then(async () => {
 
 app.on('before-quit', () => {
   isQuitting = true
+  updateMeetingSleepBlocker(false)
   updatePowerSaveBlocker(false)
   activityTracker.handleSystemShutdown()
 })
@@ -499,6 +541,33 @@ ipcMain.handle('tracker:clock-out', async () => {
     return { success: true, session }
   }
   return { success: false, error: 'Cannot clock out: no session' }
+})
+
+ipcMain.handle('tracker:toggle-meeting', async (_event, isInMeeting?: boolean) => {
+  const user = storage.getCurrentUser()
+  if (!user || !user.id) {
+    return { success: false, error: 'Authentication required' }
+  }
+  const result = activityTracker.toggleMeeting(user.id, isInMeeting)
+  return result
+})
+
+ipcMain.handle('tracker:start-meeting', async () => {
+  const user = storage.getCurrentUser()
+  if (!user || !user.id) {
+    return { success: false, error: 'Authentication required' }
+  }
+  const result = activityTracker.startMeeting(user.id)
+  return result
+})
+
+ipcMain.handle('tracker:end-meeting', async () => {
+  const user = storage.getCurrentUser()
+  if (!user || !user.id) {
+    return { success: false, error: 'Authentication required' }
+  }
+  const result = activityTracker.endMeeting(user.id)
+  return result
 })
 
 let isResetInProgress = false
