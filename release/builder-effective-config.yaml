@@ -1,0 +1,31 @@
+directories:
+  output: release
+  buildResources: build
+appId: com.triples.timetracker
+productName: TripleS Time Tracker
+forceCodeSigning: false
+files:
+  - filter:
+      - dist/**/*
+      - dist-electron/**/*
+      - public/**/*
+      - build/icon.ico
+      - scripts/**/*
+extraResources:
+  - from: scripts
+    to: scripts
+win:
+  icon: build/icon.ico
+  target:
+    - target: nsis
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  shortcutName: TripleS Time Tracker
+  uninstallDisplayName: TripleS Time Tracker
+  artifactName: TripleS-Time-Tracker-Setup-${version}.${ext}
+  include: build/installer.nsh
+electronVersion: 34.5.8
