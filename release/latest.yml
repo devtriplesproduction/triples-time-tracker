@@ -1,8 +1,8 @@
-version: 1.0.0
+version: 1.0.1
 files:
-  - url: TripleS-Time-Tracker-Setup-1.0.0.exe
-    sha512: IYB3YiLZrJe9kpHsh0awdTy5i9FU+i/0y+dpd4/zz9i+XN7ZG0WfYiXAEs0Zco7ZCUirhAizI2sXfXngnWh4hQ==
-    size: 85599240
-path: TripleS-Time-Tracker-Setup-1.0.0.exe
-sha512: IYB3YiLZrJe9kpHsh0awdTy5i9FU+i/0y+dpd4/zz9i+XN7ZG0WfYiXAEs0Zco7ZCUirhAizI2sXfXngnWh4hQ==
-releaseDate: '2026-11-27T13:49:27.563Z'
+  - url: TripleS-Time-Tracker-Setup-1.0.1.exe
+    sha512: 8utz7Z02x3rcumBmWtQAAUuepk+lq4L/oCR0/xWRnRrWh93p3aJnN2Q8KC6rtarrDr/Wx+NiaiOG+kHHaOrU3g==
+    size: 85599368
+path: TripleS-Time-Tracker-Setup-1.0.1.exe
+sha512: 8utz7Z02x3rcumBmWtQAAUuepk+lq4L/oCR0/xWRnRrWh93p3aJnN2Q8KC6rtarrDr/Wx+NiaiOG+kHHaOrU3g==
+releaseDate: '2026-11-27T14:42:42.909Z'
