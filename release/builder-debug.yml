@@ -5,6 +5,8 @@ x64:
     - '!release{,/**/*}'
     - dist/**/*
     - dist-electron/**/*
+    - public/**/*
+    - build/icon.ico
     - scripts/**/*
     - package.json
     - '!**/*.{iml,hprof,orig,pyc,pyo,rbc,swp,csproj,sln,suo,xproj,cc,d.ts,mk,a,o,forge-meta,pdb}'
@@ -18,6 +20,8 @@ x64:
     - '**/*'
     - dist/**/*
     - dist-electron/**/*
+    - public/**/*
+    - build/icon.ico
     - scripts/**/*
 nsis:
   script: |-
@@ -96,9 +100,9 @@ nsis:
 
     !addincludedir "C:\Users\HP\Desktop\Triple S Production\triples-time-tracker\build"
     !include "C:\Users\HP\Desktop\Triple S Production\triples-time-tracker\build\installer.nsh"
-    !include "C:\Users\HP\AppData\Local\Temp\t-oIR1XG\1-messages.nsh"
-    !include "C:\Users\HP\AppData\Local\Temp\t-oIR1XG\0-messages.nsh"
     !addplugindir /x86-unicode "C:\Users\HP\AppData\Local\electron-builder\Cache\nsis\nsis-resources-3.4.1\plugins\x86-unicode"
+    !include "C:\Users\HP\AppData\Local\Temp\t-cVw3Xt\0-messages.nsh"
+    !include "C:\Users\HP\AppData\Local\Temp\t-cVw3Xt\1-messages.nsh"
 
     Var newStartMenuLink
     Var oldStartMenuLink

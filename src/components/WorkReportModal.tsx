@@ -54,23 +54,23 @@ export const WorkReportModal: React.FC<WorkReportModalProps> = ({
       <div
         className="w-full max-w-md rounded-2xl border p-5 shadow-2xl transition-all"
         style={{
-          backgroundColor: '#1C2026',
+          backgroundColor: 'var(--bg-surface)',
           borderColor: 'var(--border-color)',
           color: 'var(--text-primary)'
         }}
       >
         <div className="flex items-center justify-between pb-3 border-b mb-4" style={{ borderColor: 'var(--border-color)' }}>
           <div className="flex items-center gap-2">
-            <BarChart2 size={18} className="text-sky-400" />
+            <BarChart2 size={18} style={{ color: 'var(--text-accent-sky)' }} />
             <div>
-              <h3 className="text-sm font-bold">Daily Work Report</h3>
-              <p className="text-[11px] text-slate-400">{todayFormatted} (Asia/Kolkata)</p>
+              <h3 className="text-sm font-bold" style={{ color: 'var(--text-primary)' }}>Daily Work Report</h3>
+              <p className="text-[11px]" style={{ color: 'var(--text-secondary)' }}>{todayFormatted} (Asia/Kolkata)</p>
             </div>
           </div>
           <button
             onClick={onClose}
-            className="w-7 h-7 rounded-lg flex items-center justify-center transition-colors hover:bg-white/10"
-            style={{ color: 'var(--text-muted)' }}
+            className="w-7 h-7 rounded-lg flex items-center justify-center transition-colors hover-surface"
+            style={{ color: 'var(--text-secondary)' }}
           >
             <X size={16} />
           </button>
@@ -80,39 +80,39 @@ export const WorkReportModal: React.FC<WorkReportModalProps> = ({
         <div className="grid grid-cols-2 gap-3 mb-4">
           <div
             className="p-3 rounded-xl border flex items-center gap-3"
-            style={{ backgroundColor: '#141619', borderColor: 'var(--border-color)' }}
+            style={{ backgroundColor: 'var(--bg-surface-elevated)', borderColor: 'var(--border-color)' }}
           >
-            <div className="w-8 h-8 rounded-lg bg-blue-500/15 text-blue-400 flex items-center justify-center shrink-0">
+            <div className="w-8 h-8 rounded-lg bg-blue-500/15 text-blue-500 flex items-center justify-center shrink-0">
               <Clock size={16} />
             </div>
             <div>
-              <span className="text-[10px] text-slate-400 font-medium block">Worked Hours</span>
-              <span className="text-sm font-bold text-white">{formatHrsMins(workedMinutes)}</span>
+              <span className="text-[10px] font-medium block" style={{ color: 'var(--text-secondary)' }}>Worked Hours</span>
+              <span className="text-sm font-bold" style={{ color: 'var(--text-primary)' }}>{formatHrsMins(workedMinutes)}</span>
             </div>
           </div>
 
           <div
             className="p-3 rounded-xl border flex items-center gap-3"
-            style={{ backgroundColor: '#141619', borderColor: 'var(--border-color)' }}
+            style={{ backgroundColor: 'var(--bg-surface-elevated)', borderColor: 'var(--border-color)' }}
           >
-            <div className="w-8 h-8 rounded-lg bg-green-500/15 text-green-400 flex items-center justify-center shrink-0">
+            <div className="w-8 h-8 rounded-lg bg-green-500/15 text-green-500 flex items-center justify-center shrink-0">
               <Activity size={16} />
             </div>
             <div>
-              <span className="text-[10px] text-slate-400 font-medium block">Active Hours</span>
-              <span className="text-sm font-bold text-white">{formatHrsMins(activeMinutes)}</span>
+              <span className="text-[10px] font-medium block" style={{ color: 'var(--text-secondary)' }}>Active Hours</span>
+              <span className="text-sm font-bold" style={{ color: 'var(--text-primary)' }}>{formatHrsMins(activeMinutes)}</span>
             </div>
           </div>
         </div>
 
         {/* Sessions list */}
         <div className="mb-4">
-          <span className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider block mb-2">
+          <span className="text-[11px] font-semibold uppercase tracking-wider block mb-2" style={{ color: 'var(--text-secondary)' }}>
             Today's Sessions ({todaySessions.length})
           </span>
           <div className="max-h-36 overflow-y-auto space-y-1.5 pr-1">
             {todaySessions.length === 0 ? (
-              <p className="text-xs text-slate-500 italic py-2 text-center">No sessions recorded yet today.</p>
+              <p className="text-xs italic py-2 text-center" style={{ color: 'var(--text-secondary)' }}>No sessions recorded yet today.</p>
             ) : (
               todaySessions.map((s, idx) => {
                 const inTime = new Date(s.clock_in).toLocaleTimeString('en-US', {
@@ -132,12 +132,12 @@ export const WorkReportModal: React.FC<WorkReportModalProps> = ({
                   <div
                     key={s.id || idx}
                     className="p-2 rounded-lg border flex items-center justify-between text-xs"
-                    style={{ backgroundColor: '#141619', borderColor: 'var(--border-color)' }}
+                    style={{ backgroundColor: 'var(--bg-surface-elevated)', borderColor: 'var(--border-color)' }}
                   >
-                    <span className="text-slate-300">
+                    <span style={{ color: 'var(--text-secondary)' }}>
                       Session {idx + 1}: {inTime} - {outTime}
                     </span>
-                    <span className="font-semibold text-white">
+                    <span className="font-semibold" style={{ color: 'var(--text-primary)' }}>
                       {formatHrsMins(s.worked_minutes || 0)}
                     </span>
                   </div>
@@ -151,16 +151,16 @@ export const WorkReportModal: React.FC<WorkReportModalProps> = ({
         <div className="flex items-center gap-2 pt-2 border-t" style={{ borderColor: 'var(--border-color)' }}>
           <button
             onClick={handleOpenERPReport}
-            className="flex-1 py-2 px-3 rounded-lg border font-medium text-xs text-slate-200 hover:bg-white/5 flex items-center justify-center gap-1.5 transition-colors"
-            style={{ borderColor: 'var(--border-color)' }}
+            className="flex-1 py-2 px-3 rounded-lg border font-medium text-xs hover-surface flex items-center justify-center gap-1.5 transition-colors"
+            style={{ borderColor: 'var(--border-color)', color: 'var(--text-secondary)' }}
           >
             <span>Open ERP Attendance</span>
             <ExternalLink size={13} />
           </button>
           <button
             onClick={onClose}
-            className="py-2 px-4 rounded-lg font-bold text-xs text-white transition-all shadow-sm"
-            style={{ backgroundColor: 'var(--btn-blue)' }}
+            className="py-2 px-4 rounded-lg font-bold text-xs transition-all shadow-sm"
+            style={{ backgroundColor: 'var(--btn-primary-bg)', color: 'var(--btn-primary-text)' }}
           >
             Close
           </button>

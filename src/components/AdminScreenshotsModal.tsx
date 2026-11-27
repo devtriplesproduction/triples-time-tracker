@@ -283,7 +283,7 @@ export const AdminScreenshotsModal: React.FC<AdminScreenshotsModalProps> = ({
               <button
                 onClick={handleCaptureNow}
                 disabled={isCapturingNow}
-                className="px-3 py-1.5 rounded-lg text-xs font-semibold border flex items-center gap-1.5 transition-colors hover:bg-white/10 disabled:opacity-50"
+                className="px-3 py-1.5 rounded-lg text-xs font-semibold border flex items-center gap-1.5 transition-colors hover-surface disabled:opacity-50"
                 style={{ borderColor: 'var(--border-color)', color: 'var(--text-primary)' }}
                 title="Capture screen immediately"
               >
@@ -294,7 +294,7 @@ export const AdminScreenshotsModal: React.FC<AdminScreenshotsModalProps> = ({
 
             <button
               onClick={onClose}
-              className="w-8 h-8 rounded-lg flex items-center justify-center transition-colors hover:bg-white/10"
+              className="w-8 h-8 rounded-lg flex items-center justify-center transition-colors hover-surface"
               style={{ color: 'var(--text-secondary)' }}
             >
               <X size={18} />
@@ -341,17 +341,23 @@ export const AdminScreenshotsModal: React.FC<AdminScreenshotsModalProps> = ({
             >
               <button
                 onClick={() => setFilterMode('date')}
-                className={`px-2.5 py-1 rounded-md text-[11px] font-semibold transition-all ${
-                  filterMode === 'date' ? 'bg-white/15 text-white shadow-sm' : 'text-slate-400'
-                }`}
+                className={`px-2.5 py-1 rounded-md text-[11px] font-semibold transition-all ${filterMode === 'date' ? 'shadow-sm' : ''
+                  }`}
+                style={{
+                  backgroundColor: filterMode === 'date' ? 'var(--bg-surface)' : 'transparent',
+                  color: filterMode === 'date' ? 'var(--text-primary)' : 'var(--text-secondary)'
+                }}
               >
                 Single Day
               </button>
               <button
                 onClick={() => setFilterMode('month')}
-                className={`px-2.5 py-1 rounded-md text-[11px] font-semibold transition-all ${
-                  filterMode === 'month' ? 'bg-white/15 text-white shadow-sm' : 'text-slate-400'
-                }`}
+                className={`px-2.5 py-1 rounded-md text-[11px] font-semibold transition-all ${filterMode === 'month' ? 'shadow-sm' : ''
+                  }`}
+                style={{
+                  backgroundColor: filterMode === 'month' ? 'var(--bg-surface)' : 'transparent',
+                  color: filterMode === 'month' ? 'var(--text-primary)' : 'var(--text-secondary)'
+                }}
               >
                 Full Month
               </button>
@@ -418,23 +424,23 @@ export const AdminScreenshotsModal: React.FC<AdminScreenshotsModalProps> = ({
           className="px-5 py-2.5 border-b flex items-center justify-between text-xs shrink-0"
           style={{ backgroundColor: 'var(--bg-surface-elevated)', borderColor: 'var(--border-color)' }}
         >
-          <div className="flex items-center gap-2">
-            <span className="font-bold text-white">
+          <div className="flex items-center gap-2" style={{ color: 'var(--text-secondary)' }}>
+            <span className="font-bold" style={{ color: 'var(--text-primary)' }}>
               {selectedEmployee?.first_name} {selectedEmployee?.last_name || ''}
             </span>
-            <span className="text-slate-400">•</span>
-            <span className="text-slate-400">{selectedEmployee?.designation || 'Employee'}</span>
-            <span className="text-slate-400">•</span>
-            <span className="text-slate-400">{selectedEmployee?.department || 'Department'}</span>
+            <span>•</span>
+            <span>{selectedEmployee?.designation || 'Employee'}</span>
+            <span>•</span>
+            <span>{selectedEmployee?.department || 'Department'}</span>
           </div>
 
-          <div className="flex items-center gap-3 font-medium">
-            <span className="text-slate-400">
+          <div className="flex items-center gap-3 font-medium" style={{ color: 'var(--text-secondary)' }}>
+            <span>
               Total Captured:{' '}
-              <strong className="text-white font-bold">{screenshots.length}</strong>
+              <strong className="font-bold" style={{ color: 'var(--text-primary)' }}>{screenshots.length}</strong>
             </span>
-            <span className="text-slate-400">•</span>
-            <span className="text-slate-400">Cadence: ~7 mins</span>
+            <span>•</span>
+            <span>Cadence: ~7 mins</span>
           </div>
         </div>
 
@@ -448,15 +454,15 @@ export const AdminScreenshotsModal: React.FC<AdminScreenshotsModalProps> = ({
           )}
 
           {loading ? (
-            <div className="h-full flex flex-col items-center justify-center text-slate-400 gap-2.5 py-16">
-              <div className="w-6 h-6 border-2 border-slate-600 border-t-white rounded-full animate-spin" />
+            <div className="h-full flex flex-col items-center justify-center gap-2.5 py-16" style={{ color: 'var(--text-secondary)' }}>
+              <div className="w-6 h-6 border-2 border-current/25 border-t-current rounded-full animate-spin" />
               <span className="text-xs">Fetching screenshots from database...</span>
             </div>
           ) : screenshots.length === 0 ? (
-            <div className="h-full flex flex-col items-center justify-center text-center py-16 text-slate-400">
-              <Camera size={36} className="text-slate-600 mb-3" />
-              <h4 className="text-sm font-bold text-white">No Screenshots Found</h4>
-              <p className="text-xs text-slate-400 mt-1 max-w-sm">
+            <div className="h-full flex flex-col items-center justify-center text-center py-16" style={{ color: 'var(--text-secondary)' }}>
+              <Camera size={36} className="opacity-40 mb-3" />
+              <h4 className="text-sm font-bold" style={{ color: 'var(--text-primary)' }}>No Screenshots Found</h4>
+              <p className="text-xs mt-1 max-w-sm">
                 No automatic 7-minute screenshots were recorded for this employee during the selected{' '}
                 {filterMode === 'date' ? `date (${selectedDate})` : `month (${selectedMonth})`}.
               </p>
@@ -517,10 +523,10 @@ export const AdminScreenshotsModal: React.FC<AdminScreenshotsModalProps> = ({
                     {/* Metadata Footer */}
                     <div className="p-2.5 flex flex-col gap-1 text-[11px]">
                       <div className="flex items-center justify-between">
-                        <span className="font-semibold truncate max-w-[140px] text-white" title={item.app_name || 'Desktop Work'}>
+                        <span className="font-semibold truncate max-w-[140px]" style={{ color: 'var(--text-primary)' }} title={item.app_name || 'Desktop Work'}>
                           {item.app_name || 'Desktop Work'}
                         </span>
-                        <span className="text-[10px] text-slate-400 shrink-0">
+                        <span className="text-[10px] shrink-0" style={{ color: 'var(--text-secondary)' }}>
                           {Math.round((item.file_size_bytes || 0) / 1024)} KB
                         </span>
                       </div>
@@ -653,9 +659,8 @@ export const AdminScreenshotsModal: React.FC<AdminScreenshotsModalProps> = ({
               <button
                 key={s.id}
                 onClick={() => setActiveLightboxIndex(idx)}
-                className={`h-12 w-20 rounded-md overflow-hidden border-2 transition-all shrink-0 ${
-                  activeLightboxIndex === idx ? 'border-blue-500 scale-105' : 'border-transparent opacity-60 hover:opacity-100'
-                }`}
+                className={`h-12 w-20 rounded-md overflow-hidden border-2 transition-all shrink-0 ${activeLightboxIndex === idx ? 'border-blue-500 scale-105' : 'border-transparent opacity-60 hover:opacity-100'
+                  }`}
               >
                 <img
                   src={s.image_url || s.image_data || ''}

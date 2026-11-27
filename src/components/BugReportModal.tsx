@@ -63,7 +63,7 @@ export const BugReportModal: React.FC<BugReportModalProps> = ({ isOpen, onClose,
           </div>
           <button
             onClick={onClose}
-            className="w-7 h-7 rounded-lg flex items-center justify-center transition-colors hover:bg-white/10"
+            className="w-7 h-7 rounded-lg flex items-center justify-center transition-colors hover-surface"
             style={{ color: 'var(--text-secondary)' }}
           >
             <X size={16} />
@@ -135,7 +135,7 @@ export const BugReportModal: React.FC<BugReportModalProps> = ({ isOpen, onClose,
               <button
                 type="button"
                 onClick={onClose}
-                className="flex-1 py-2 rounded-lg border font-medium transition-colors hover:bg-white/5"
+                className="flex-1 py-2 rounded-lg border font-medium transition-colors hover-surface"
                 style={{
                   borderColor: 'var(--border-color)',
                   color: 'var(--text-secondary)'

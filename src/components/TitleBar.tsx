@@ -44,7 +44,7 @@ export const TitleBar: React.FC<TitleBarProps> = ({ theme, onToggleTheme }) => {
         {onToggleTheme && (
           <button
             onClick={onToggleTheme}
-            className="w-7 h-7 rounded flex items-center justify-center transition-colors hover:bg-white/10"
+            className="w-7 h-7 rounded flex items-center justify-center transition-colors hover-surface"
             style={{ color: 'var(--text-secondary)' }}
             title={theme === 'dark' ? 'Switch to Light Mode' : 'Switch to Dark Mode'}
           >
@@ -54,7 +54,7 @@ export const TitleBar: React.FC<TitleBarProps> = ({ theme, onToggleTheme }) => {
 
         <button
           onClick={handleMinimize}
-          className="w-7 h-7 rounded flex items-center justify-center transition-colors hover:bg-white/10"
+          className="w-7 h-7 rounded flex items-center justify-center transition-colors hover-surface"
           style={{ color: 'var(--text-secondary)' }}
           title="Minimize"
         >
@@ -63,7 +63,7 @@ export const TitleBar: React.FC<TitleBarProps> = ({ theme, onToggleTheme }) => {
 
         <button
           onClick={handleMaximize}
-          className="w-7 h-7 rounded flex items-center justify-center transition-colors hover:bg-white/10"
+          className="w-7 h-7 rounded flex items-center justify-center transition-colors hover-surface"
           style={{ color: 'var(--text-secondary)' }}
           title="Maximize"
         >

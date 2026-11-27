@@ -1,5 +1,5 @@
 import React, { useState } from 'react'
-import { Lock, Mail, ArrowRight, ShieldCheck, AlertCircle, Download } from 'lucide-react'
+import { Lock, Mail, ArrowRight, ShieldCheck, AlertCircle, Download, Eye, EyeOff } from 'lucide-react'
 import type { UserProfile } from '../types'
 
 interface LoginModalProps {
@@ -12,6 +12,7 @@ interface LoginModalProps {
 export const LoginModal: React.FC<LoginModalProps> = ({ isOpen, onClose, onSuccess, initialError }) => {
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
+  const [showPassword, setShowPassword] = useState(false)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(initialError || null)
   const isWebEnvironment = typeof window !== 'undefined' && !window.electronAPI
@@ -66,7 +67,7 @@ export const LoginModal: React.FC<LoginModalProps> = ({ isOpen, onClose, onSucce
         {onClose && (
           <button
             onClick={onClose}
-            className="absolute top-4 right-4 text-xs font-semibold px-2 py-1 rounded hover:bg-white/10"
+            className="absolute top-4 right-4 text-xs font-semibold px-2 py-1 rounded hover-surface"
             style={{ color: 'var(--text-secondary)' }}
           >
             ✕
@@ -141,18 +142,27 @@ export const LoginModal: React.FC<LoginModalProps> = ({ isOpen, onClose, onSucce
             <div className="relative">
               <Lock size={16} className="absolute left-3 top-3" style={{ color: 'var(--text-secondary)' }} />
               <input
-                type="password"
+                type={showPassword ? 'text' : 'password'}
                 required
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
                 placeholder="••••••••"
-                className="w-full pl-9 pr-3 py-2.5 rounded-lg border text-sm outline-none transition-all"
+                className="w-full pl-9 pr-10 py-2.5 rounded-lg border text-sm outline-none transition-all"
                 style={{
                   backgroundColor: 'var(--bg-surface-elevated)',
                   borderColor: 'var(--border-color)',
                   color: 'var(--text-primary)'
                 }}
               />
+              <button
+                type="button"
+                onClick={() => setShowPassword((prev) => !prev)}
+                aria-label={showPassword ? 'Hide password' : 'Show password'}
+                className="absolute right-2.5 top-1/2 -translate-y-1/2 p-1 rounded hover-surface transition-colors"
+                style={{ color: 'var(--text-secondary)' }}
+              >
+                {showPassword ? <EyeOff size={16} /> : <Eye size={16} />}
+              </button>
             </div>
           </div>
 

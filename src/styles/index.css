@@ -15,6 +15,8 @@
 
   --btn-primary-bg: #09090B;
   --btn-primary-text: #FFFFFF;
+  --hover-bg: rgba(0, 0, 0, 0.05);
+  --text-accent-sky: #0284C7;
 
   /* Semantic status colors preserved */
   --status-green: #10B981;
@@ -49,6 +51,8 @@
 
   --btn-primary-bg: #FFFFFF;
   --btn-primary-text: #000000;
+  --hover-bg: rgba(255, 255, 255, 0.08);
+  --text-accent-sky: #38BDF8;
 
   /* Semantic status colors preserved */
   --status-green: #22C55E;
@@ -94,6 +98,10 @@ body {
 
 .no-drag {
   -webkit-app-region: no-drag;
+}
+
+.hover-surface:hover {
+  background-color: var(--hover-bg);
 }
 
 /* Scrollbar styles */

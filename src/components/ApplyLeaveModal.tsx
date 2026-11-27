@@ -80,20 +80,20 @@ export const ApplyLeaveModal: React.FC<ApplyLeaveModalProps> = ({
       <div
         className="w-full max-w-sm rounded-2xl border p-5 shadow-2xl transition-all"
         style={{
-          backgroundColor: '#1C2026',
+          backgroundColor: 'var(--bg-surface)',
           borderColor: 'var(--border-color)',
           color: 'var(--text-primary)'
         }}
       >
         <div className="flex items-center justify-between pb-3 border-b mb-4" style={{ borderColor: 'var(--border-color)' }}>
           <div className="flex items-center gap-2">
-            <Calendar size={18} className="text-emerald-400" />
-            <h3 className="text-sm font-bold">Apply for Leave</h3>
+            <Calendar size={18} className="text-emerald-500" />
+            <h3 className="text-sm font-bold" style={{ color: 'var(--text-primary)' }}>Apply for Leave</h3>
           </div>
           <button
             onClick={onClose}
-            className="w-7 h-7 rounded-lg flex items-center justify-center transition-colors hover:bg-white/10"
-            style={{ color: 'var(--text-muted)' }}
+            className="w-7 h-7 rounded-lg flex items-center justify-center transition-colors hover-surface"
+            style={{ color: 'var(--text-secondary)' }}
           >
             <X size={16} />
           </button>
@@ -108,16 +108,16 @@ export const ApplyLeaveModal: React.FC<ApplyLeaveModalProps> = ({
 
         {submitted ? (
           <div className="py-8 flex flex-col items-center justify-center text-center">
-            <div className="w-12 h-12 rounded-full bg-emerald-500/20 text-emerald-400 flex items-center justify-center mb-2">
+            <div className="w-12 h-12 rounded-full bg-emerald-500/20 text-emerald-500 flex items-center justify-center mb-2">
               <Check size={24} />
             </div>
-            <p className="text-sm font-bold text-white">Leave Request Submitted</p>
-            <p className="text-xs text-slate-400 mt-1">Sent to your manager for approval.</p>
+            <p className="text-sm font-bold" style={{ color: 'var(--text-primary)' }}>Leave Request Submitted</p>
+            <p className="text-xs mt-1" style={{ color: 'var(--text-secondary)' }}>Sent to your manager for approval.</p>
           </div>
         ) : (
           <form onSubmit={handleSubmit} className="space-y-3 text-xs">
             <div>
-              <label className="block text-[11px] font-semibold text-slate-400 uppercase tracking-wider mb-1">
+              <label className="block text-[11px] font-semibold uppercase tracking-wider mb-1" style={{ color: 'var(--text-secondary)' }}>
                 Leave Type
               </label>
               <select
@@ -125,9 +125,9 @@ export const ApplyLeaveModal: React.FC<ApplyLeaveModalProps> = ({
                 onChange={(e) => setLeaveType(e.target.value)}
                 className="w-full px-3 py-2 rounded-lg border text-xs outline-none transition-all focus:border-blue-500"
                 style={{
-                  backgroundColor: '#141619',
+                  backgroundColor: 'var(--bg-surface-elevated)',
                   borderColor: 'var(--border-color)',
-                  color: '#FFFFFF'
+                  color: 'var(--text-primary)'
                 }}
               >
                 <option value="Casual Leave">Casual Leave (CL)</option>
@@ -139,7 +139,7 @@ export const ApplyLeaveModal: React.FC<ApplyLeaveModalProps> = ({
 
             <div className="grid grid-cols-2 gap-2">
               <div>
-                <label className="block text-[11px] font-semibold text-slate-400 uppercase tracking-wider mb-1">
+                <label className="block text-[11px] font-semibold uppercase tracking-wider mb-1" style={{ color: 'var(--text-secondary)' }}>
                   Start Date
                 </label>
                 <input
@@ -149,14 +149,14 @@ export const ApplyLeaveModal: React.FC<ApplyLeaveModalProps> = ({
                   onChange={(e) => setStartDate(e.target.value)}
                   className="w-full px-2.5 py-1.5 rounded-lg border text-xs outline-none transition-all focus:border-blue-500"
                   style={{
-                    backgroundColor: '#141619',
+                    backgroundColor: 'var(--bg-surface-elevated)',
                     borderColor: 'var(--border-color)',
-                    color: '#FFFFFF'
+                    color: 'var(--text-primary)'
                   }}
                 />
               </div>
               <div>
-                <label className="block text-[11px] font-semibold text-slate-400 uppercase tracking-wider mb-1">
+                <label className="block text-[11px] font-semibold uppercase tracking-wider mb-1" style={{ color: 'var(--text-secondary)' }}>
                   End Date
                 </label>
                 <input
@@ -165,16 +165,16 @@ export const ApplyLeaveModal: React.FC<ApplyLeaveModalProps> = ({
                   onChange={(e) => setEndDate(e.target.value)}
                   className="w-full px-2.5 py-1.5 rounded-lg border text-xs outline-none transition-all focus:border-blue-500"
                   style={{
-                    backgroundColor: '#141619',
+                    backgroundColor: 'var(--bg-surface-elevated)',
                     borderColor: 'var(--border-color)',
-                    color: '#FFFFFF'
+                    color: 'var(--text-primary)'
                   }}
                 />
               </div>
             </div>
 
             <div>
-              <label className="block text-[11px] font-semibold text-slate-400 uppercase tracking-wider mb-1">
+              <label className="block text-[11px] font-semibold uppercase tracking-wider mb-1" style={{ color: 'var(--text-secondary)' }}>
                 Reason
               </label>
               <textarea
@@ -185,9 +185,9 @@ export const ApplyLeaveModal: React.FC<ApplyLeaveModalProps> = ({
                 placeholder="Brief reason for leave request..."
                 className="w-full px-3 py-2 rounded-lg border text-xs outline-none transition-all focus:border-blue-500 resize-none"
                 style={{
-                  backgroundColor: '#141619',
+                  backgroundColor: 'var(--bg-surface-elevated)',
                   borderColor: 'var(--border-color)',
-                  color: '#FFFFFF'
+                  color: 'var(--text-primary)'
                 }}
               />
             </div>
@@ -196,8 +196,8 @@ export const ApplyLeaveModal: React.FC<ApplyLeaveModalProps> = ({
               <button
                 type="button"
                 onClick={handleOpenERPLeave}
-                className="flex-1 py-2 rounded-lg border font-medium text-slate-300 hover:bg-white/5 flex items-center justify-center gap-1 transition-colors text-[11px]"
-                style={{ borderColor: 'var(--border-color)' }}
+                className="flex-1 py-2 rounded-lg border font-medium hover-surface flex items-center justify-center gap-1 transition-colors text-[11px]"
+                style={{ borderColor: 'var(--border-color)', color: 'var(--text-secondary)' }}
               >
                 <span>ERP Portal</span>
                 <ExternalLink size={12} />
@@ -205,8 +205,8 @@ export const ApplyLeaveModal: React.FC<ApplyLeaveModalProps> = ({
               <button
                 type="submit"
                 disabled={loading}
-                className="flex-1 py-2 rounded-lg font-bold text-white transition-all active:scale-95 disabled:opacity-50 text-xs"
-                style={{ backgroundColor: 'var(--btn-blue)' }}
+                className="flex-1 py-2 rounded-lg font-bold transition-all active:scale-95 disabled:opacity-50 text-xs"
+                style={{ backgroundColor: 'var(--btn-primary-bg)', color: 'var(--btn-primary-text)' }}
               >
                 {loading ? 'Submitting...' : 'Apply Leave'}
               </button>

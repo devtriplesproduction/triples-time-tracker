@@ -28,7 +28,7 @@ export const HelpModal: React.FC<HelpModalProps> = ({ isOpen, onClose }) => {
           </div>
           <button
             onClick={onClose}
-            className="w-7 h-7 rounded-lg flex items-center justify-center transition-colors hover:bg-white/10"
+            className="w-7 h-7 rounded-lg flex items-center justify-center transition-colors hover-surface"
             style={{ color: 'var(--text-secondary)' }}
           >
             <X size={16} />
@@ -59,10 +59,11 @@ export const HelpModal: React.FC<HelpModalProps> = ({ isOpen, onClose }) => {
               Quick Guide
             </span>
             <div className="text-[11px] space-y-1.5 pl-1" style={{ color: 'var(--text-secondary)' }}>
-              <p>• <strong className="text-white">Clock In:</strong> Start your daily tracking session.</p>
-              <p>• <strong className="text-white">Take a Break:</strong> Immediately stops worked timer and active hours.</p>
-              <p>• <strong className="text-white">Resume Work:</strong> Resumes worked timer from previous duration.</p>
-              <p>• <strong className="text-white">Midnight Reset:</strong> The daily display resets to 00:00:00 without interrupting your active session.</p>
+              <p>• <strong style={{ color: 'var(--text-primary)' }}>Clock In:</strong> Start your daily tracking session.</p>
+              <p>• <strong style={{ color: 'var(--text-primary)' }}>In a Meeting:</strong> Keeps active hours counting continuously without mouse or keyboard activity until you click End Meeting.</p>
+              <p>• <strong style={{ color: 'var(--text-primary)' }}>Take a Break:</strong> Immediately stops worked timer and active hours.</p>
+              <p>• <strong style={{ color: 'var(--text-primary)' }}>Resume Work:</strong> Resumes worked timer from previous duration.</p>
+              <p>• <strong style={{ color: 'var(--text-primary)' }}>Midnight Reset:</strong> The daily display resets to 00:00:00 without interrupting your active session.</p>
             </div>
           </div>
 

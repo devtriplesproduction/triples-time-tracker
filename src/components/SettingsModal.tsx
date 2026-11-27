@@ -102,22 +102,22 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/75 backdrop-blur-sm animate-fade-in font-sans">
-      <div 
-        className="w-full max-w-sm rounded-2xl border p-5 shadow-2xl transition-all"
+      <div
+        className="w-full max-w-sm max-h-[calc(100vh-2rem)] flex flex-col rounded-2xl border p-5 shadow-2xl transition-all"
         style={{
           backgroundColor: 'var(--bg-surface)',
           borderColor: 'var(--border-color)',
           color: 'var(--text-primary)'
         }}
       >
-        <div className="flex items-center justify-between pb-3 border-b mb-4" style={{ borderColor: 'var(--border-color)' }}>
+        <div className="shrink-0 flex items-center justify-between pb-3 border-b mb-4" style={{ borderColor: 'var(--border-color)' }}>
           <div className="flex items-center gap-2">
             <Sliders size={18} style={{ color: 'var(--text-secondary)' }} />
             <h3 className="text-sm font-bold">Tracker Settings</h3>
           </div>
           <button
             onClick={onClose}
-            className="w-7 h-7 rounded-lg flex items-center justify-center transition-colors hover:bg-white/10"
+            className="w-7 h-7 rounded-lg flex items-center justify-center transition-colors hover-surface"
             style={{ color: 'var(--text-secondary)' }}
           >
             <X size={16} />
@@ -126,13 +126,13 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
 
         {/* Error message */}
         {error && (
-          <div className="mb-3 p-2 rounded-lg text-xs bg-red-500/15 text-red-400 border border-red-500/25 font-medium flex items-center justify-between">
+          <div className="shrink-0 mb-3 p-2 rounded-lg text-xs bg-red-500/15 text-red-400 border border-red-500/25 font-medium flex items-center justify-between">
             <span>{error}</span>
             <button onClick={() => setError(null)} className="ml-2 font-bold hover:text-red-300">✕</button>
           </div>
         )}
 
-        <div className="space-y-4 text-xs">
+        <div className="flex-1 min-h-0 overflow-y-auto pr-1 space-y-4 text-xs">
           {/* User Account Info */}
           {user && (
             <div className="p-3 rounded-xl border" style={{ backgroundColor: 'var(--bg-surface-elevated)', borderColor: 'var(--border-color)' }}>
@@ -168,8 +168,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
               </span>
             </div>
             <p className="text-[11px] mb-2" style={{ color: 'var(--text-secondary)' }}>
-              {isAdmin 
-                ? 'Configure inactivity threshold applied to tracking sessions.' 
+              {isAdmin
+                ? 'Configure inactivity threshold applied to tracking sessions.'
                 : 'Marks session as idle when no keyboard or mouse activity is detected.'}
             </p>
             <div className="grid grid-cols-4 gap-1.5">
@@ -182,17 +182,16 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                     if (isAdmin) setIdleThreshold(sec)
                   }}
                   title={!isAdmin ? 'Inactivity threshold is managed exclusively by Administrators' : undefined}
-                  className={`py-1.5 rounded-lg border font-medium text-xs transition-all ${
-                    !isAdmin 
-                      ? 'opacity-50 cursor-not-allowed' 
+                  className={`py-1.5 rounded-lg border font-medium text-xs transition-all ${!isAdmin
+                      ? 'opacity-50 cursor-not-allowed'
                       : 'cursor-pointer active:scale-95'
-                  }`}
+                    }`}
                   style={{
-                    backgroundColor: idleThreshold === sec 
-                      ? 'var(--bg-surface)' 
+                    backgroundColor: idleThreshold === sec
+                      ? 'var(--bg-surface)'
                       : 'var(--bg-surface-elevated)',
-                    borderColor: idleThreshold === sec 
-                      ? 'var(--text-primary)' 
+                    borderColor: idleThreshold === sec
+                      ? 'var(--text-primary)'
                       : 'var(--border-color)',
                     color: idleThreshold === sec
                       ? 'var(--text-primary)'
@@ -244,7 +243,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
               type="checkbox"
               checked={minimizeToTray}
               onChange={(e) => setMinimizeToTray(e.target.checked)}
-              className="w-4 h-4 rounded cursor-pointer accent-white"
+              className="w-4 h-4 rounded cursor-pointer"
+              style={{ accentColor: 'var(--btn-primary-bg)' }}
             />
           </div>
 
@@ -260,7 +260,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
               type="checkbox"
               checked={launchOnStartup}
               onChange={(e) => setLaunchOnStartup(e.target.checked)}
-              className="w-4 h-4 rounded cursor-pointer accent-white"
+              className="w-4 h-4 rounded cursor-pointer"
+              style={{ accentColor: 'var(--btn-primary-bg)' }}
             />
           </div>
 
@@ -278,7 +279,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
               <button
                 type="button"
                 onClick={handleToggleAuditLogs}
-                className="w-full py-1.5 px-2.5 rounded-lg border flex items-center justify-between text-[11px] font-medium transition-colors hover:bg-white/5"
+                className="w-full py-1.5 px-2.5 rounded-lg border flex items-center justify-between text-[11px] font-medium transition-colors hover-surface"
                 style={{ borderColor: 'var(--border-color)', color: 'var(--text-secondary)' }}
               >
                 <div className="flex items-center gap-1.5">
@@ -297,39 +298,46 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                   }}
                 >
                   {loadingLogs ? (
-                    <div className="text-center py-2 text-neutral-400 animate-pulse">Loading audit logs...</div>
+                    <div className="text-center py-2 animate-pulse" style={{ color: 'var(--text-secondary)' }}>Loading audit logs...</div>
                   ) : auditLogs.length === 0 ? (
-                    <div className="text-center py-2 text-neutral-400">No reset events recorded yet.</div>
+                    <div className="text-center py-2" style={{ color: 'var(--text-secondary)' }}>No reset events recorded yet.</div>
                   ) : (
                     auditLogs.map((log) => (
-                      <div key={log.id} className="p-2 rounded-lg bg-black/20 border border-white/5 text-[10px]">
+                      <div
+                        key={log.id}
+                        className="p-2 rounded-lg border text-[10px]"
+                        style={{
+                          backgroundColor: 'var(--bg-surface)',
+                          borderColor: 'var(--border-color)'
+                        }}
+                      >
                         <div className="flex items-center justify-between font-bold">
                           <span className={
                             log.reset_type === 'automatic_daily_reset'
-                              ? 'text-sky-400'
+                              ? 'text-sky-500'
                               : log.reset_type === 'discard_session'
-                              ? 'text-red-400'
-                              : 'text-amber-400'
+                                ? 'text-red-500'
+                                : 'text-amber-500'
                           }>
                             {log.reset_type === 'automatic_daily_reset'
                               ? 'Daily Midnight Reset'
                               : log.reset_type === 'discard_session'
-                              ? 'Session Discarded'
-                              : 'Session Restarted'}
+                                ? 'Session Discarded'
+                                : 'Session Restarted'}
                           </span>
-                          <span className="text-neutral-400 font-mono">
+                          <span className="font-mono" style={{ color: 'var(--text-secondary)' }}>
                             {new Date(log.created_at).toLocaleDateString()} {new Date(log.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                           </span>
                         </div>
-                        <div className="mt-0.5 text-neutral-300">
-                          Archived Worked: <span className="font-mono text-emerald-300">{formatSecondsToHHMMSS(log.previous_worked_seconds)}</span>
+                        <div className="mt-0.5" style={{ color: 'var(--text-primary)' }}>
+                          Archived Worked: <span className="font-mono font-semibold text-emerald-500">{formatSecondsToHHMMSS(log.previous_worked_seconds)}</span>
                           {log.previous_active_seconds !== undefined && (
                             <span className="ml-2">
-                              Active: <span className="font-mono text-sky-300">{formatSecondsToHHMMSS(log.previous_active_seconds)}</span>
+                              Active: <span className="font-mono font-semibold text-sky-500">{formatSecondsToHHMMSS(log.previous_active_seconds)}</span>
                             </span>
                           )}
                         </div>
-                        <div className="text-neutral-400 truncate mt-0.5" title={log.reason}>
+                        <div className="truncate mt-0.5" style={{ color: 'var(--text-secondary)' }} title={log.reason}>
                           {log.reason}
                         </div>
                       </div>
@@ -339,13 +347,15 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
               )}
             </div>
           </div>
+        </div>
 
-          {/* Actions: Sync and Save */}
-          <div className="flex items-center gap-2 pt-2 border-t" style={{ borderColor: 'var(--border-color)' }}>
+        {/* Footer Actions: Sync, Save, and Sign Out */}
+        <div className="shrink-0 pt-3 mt-3 border-t space-y-2 text-xs" style={{ borderColor: 'var(--border-color)' }}>
+          <div className="flex items-center gap-2">
             <button
               onClick={handleManualSync}
               disabled={syncing}
-              className="flex-1 py-2 px-3 rounded-lg border font-medium flex items-center justify-center gap-1.5 transition-colors hover:bg-white/5"
+              className="flex-1 py-2 px-3 rounded-lg border font-medium flex items-center justify-center gap-1.5 transition-colors hover-surface"
               style={{ borderColor: 'var(--border-color)', color: 'var(--text-secondary)' }}
             >
               <RefreshCw size={13} className={syncing ? 'animate-spin' : ''} />
@@ -365,16 +375,13 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
             </button>
           </div>
 
-          {/* Sign Out */}
-          <div className="pt-2">
-            <button
-              onClick={onLogout}
-              className="w-full py-2 px-3 rounded-lg font-semibold text-red-400 hover:bg-red-500/10 flex items-center justify-center gap-1.5 transition-colors"
-            >
-              <LogOut size={14} />
-              <span>Sign Out of Tracker</span>
-            </button>
-          </div>
+          <button
+            onClick={onLogout}
+            className="w-full py-2 px-3 rounded-lg font-semibold text-red-400 hover:bg-red-500/10 flex items-center justify-center gap-1.5 transition-colors"
+          >
+            <LogOut size={14} />
+            <span>Sign Out of Tracker</span>
+          </button>
         </div>
       </div>
     </div>

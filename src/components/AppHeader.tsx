@@ -118,7 +118,7 @@ export const AppHeader: React.FC<AppHeaderProps> = React.memo(({
                   setIsAvatarMenuOpen(false)
                   onOpenBugReport()
                 }}
-                className="w-full px-3.5 py-2 text-left text-xs hover:bg-white/5 flex items-center gap-2 transition-colors"
+                className="w-full px-3.5 py-2 text-left text-xs hover-surface flex items-center gap-2 transition-colors"
                 style={{ color: 'var(--text-secondary)' }}
               >
                 <Bug size={14} />
@@ -132,7 +132,8 @@ export const AppHeader: React.FC<AppHeaderProps> = React.memo(({
                     setIsAvatarMenuOpen(false)
                     onOpenScreenshots()
                   }}
-                  className="w-full px-3.5 py-2 text-left text-xs hover:bg-white/5 flex items-center gap-2 transition-colors text-sky-400 font-medium"
+                  className="w-full px-3.5 py-2 text-left text-xs hover-surface flex items-center gap-2 transition-colors font-medium"
+                  style={{ color: 'var(--text-accent-sky)' }}
                 >
                   <Camera size={14} />
                   <span>Screenshots Inspection</span>
@@ -145,7 +146,7 @@ export const AppHeader: React.FC<AppHeaderProps> = React.memo(({
                   setIsAvatarMenuOpen(false)
                   onOpenSettings()
                 }}
-                className="w-full px-3.5 py-2 text-left text-xs hover:bg-white/5 flex items-center gap-2 transition-colors"
+                className="w-full px-3.5 py-2 text-left text-xs hover-surface flex items-center gap-2 transition-colors"
                 style={{ color: 'var(--text-secondary)' }}
               >
                 <SettingsIcon size={14} />
