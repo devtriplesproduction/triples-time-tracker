@@ -29,7 +29,7 @@ export const WebLandingScreen: React.FC<WebLandingScreenProps> = ({
   onPreviewUI
 }) => {
   const [downloadStarted, setDownloadStarted] = useState(false)
-  const directDownloadUrl = 'https://github.com/devtriplesproduction/triples-time-tracker/releases/download/v1.0.1/TripleS-Time-Tracker-Setup-1.0.0.exe'
+  const directDownloadUrl = 'https://github.com/devtriplesproduction/triples-time-tracker/releases/latest/download/TripleS-Time-Tracker-Setup-1.0.0.exe'
   const erpUrl = 'https://triples-erp.vercel.app'
 
   const handleLaunchApp = () => {
