@@ -29,7 +29,7 @@ export const WebLandingScreen: React.FC<WebLandingScreenProps> = ({
   onPreviewUI
 }) => {
   const [downloadStarted, setDownloadStarted] = useState(false)
-  const directDownloadUrl = 'https://github.com/devtriplesproduction/triples-time-tracker/releases/download/v1.0.0/TripleS-Time-Tracker-Setup-1.0.0.exe'
+  const directDownloadUrl = 'https://github.com/devtriplesproduction/triples-time-tracker/releases/download/v1.0.1/TripleS-Time-Tracker-Setup-1.0.0.exe'
   const erpUrl = 'https://triples-erp.vercel.app'
 
   const handleLaunchApp = () => {
@@ -83,7 +83,7 @@ export const WebLandingScreen: React.FC<WebLandingScreenProps> = ({
                 TripleS Time Tracker
               </span>
               <span className="px-2 py-0.5 text-[10px] font-semibold rounded-full bg-emerald-500/15 text-emerald-400 border border-emerald-500/25">
-                v1.0.0
+                v1.0.1
               </span>
             </div>
             <p className="text-[11px]" style={{ color: 'var(--text-secondary)' }}>
